@@ -311,7 +311,7 @@ class TRTLoader(io.ComfyNode):
                 ),
             ],
             outputs=[
-                io.Model.Output(id="engine", display_name="Model"),   
+                io.Model.Output(id="engine", display_name="MODEL"),   
             ],
             is_output_node=True
         )

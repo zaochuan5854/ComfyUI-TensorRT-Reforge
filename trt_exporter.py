@@ -100,8 +100,7 @@ class TRTExporter(io.ComfyNode):
             display_name="TensorRT Exporter Reforge",
             category="TensorRT",
             inputs=[
-                io.Model.Input(id="model_patcher", display_name="Model"),
-                io.Int.Input(id="opt_batch_size", display_name="Opt Batch Size", default=1, min=1),
+                io.Model.Input(id="model_patcher", display_name="MODEL"),
                 io.Int.Input(id="opt_width", display_name="Opt Width", default=512, min=1), #Width First for comfyui
                 io.Int.Input(id="opt_height", display_name="Opt Height", default=512, min=1),
                 io.Int.Input(id="opt_context_mult", display_name="Opt Context Multiplier", default=1, min=1),
