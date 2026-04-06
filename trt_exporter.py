@@ -215,8 +215,8 @@ class TRTExporter(io.ComfyNode):
         print("[TensorRT] Building TensorRT Engine ...")
         
         output_dir = folder_paths.get_output_directory()
-        output_dir = os.path.join(output_dir, kwargs["filename_prefix"])
-        basename = trt_spec_to_string(kwargs) + f".{model_type.name}"
+        output_dir = os.path.join(output_dir, os.path.dirname(kwargs["filename_prefix"]))
+        basename = os.path.basename(kwargs["filename_prefix"]) + trt_spec_to_string(kwargs) + f".{model_type.name}"
         trt_output_path = os.path.join(output_dir, f"{basename}.engine")
 
         build_tensorrt_engine(
