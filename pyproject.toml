@@ -1,0 +1,18 @@
+[project]
+name = "comfyui-tensorrt-reforge"
+description = "Building upon the excellent foundation of ComfyUI_TensorRT, this version focuses on full support for the Anima architecture and advanced TensorRT acceleration. It aims to push NVIDIA RTX™ GPU performance to its limits for the next generation of Stable Diffusion workflows."
+version = "0.0.1"
+license = "LICENSE"
+dependencies = [
+  "onnx>=1.18.0"
+  "onnxruntime-gpu>=1.20.0"
+  "tensorrt>=10.15.1"
+]
+
+[project.urls]
+Repository = "https://github.com/zaochuan5854/ComfyUI_TensorRT"
+
+[tool.comfy]
+PublisherId = "comfy"
+DisplayName = "ComfyUI-TensorRT-Reforge"
+Icon = ""
