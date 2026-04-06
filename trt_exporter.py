@@ -84,9 +84,9 @@ def trt_spec_to_string(spec: TRTSpec) -> str:
                 spec["min_height"] == spec["max_height"] == 0 and \
                 spec["min_context_mult"] == spec["max_context_mult"] == 0
     if is_static:
-        return f"BS{spec['opt_batch_size']}_W{spec['opt_width']}_H{spec['opt_height']}_CM{spec['opt_context_mult']}"
+        return f"W{spec['opt_width']}_H{spec['opt_height']}_BS{spec['opt_batch_size']}_CM{spec['opt_context_mult']}"
     else:
-        return f"BS{spec['min_batch_size']}-{spec['opt_batch_size']}-{spec['max_batch_size']}_W{spec['min_width']}-{spec['opt_width']}-{spec['max_width']}_H{spec['min_height']}-{spec['opt_height']}-{spec['max_height']}_CM{spec['min_context_mult']}-{spec['opt_context_mult']}-{spec['max_context_mult']}"
+        return f"W{spec['min_width']}-{spec['opt_width']}-{spec['max_width']}_H{spec['min_height']}-{spec['opt_height']}-{spec['max_height']}_BS{spec['min_batch_size']}-{spec['opt_batch_size']}-{spec['max_batch_size']}_CM{spec['min_context_mult']}-{spec['opt_context_mult']}-{spec['max_context_mult']}"
 
 class TRTExporter(io.ComfyNode):
     """
@@ -103,18 +103,20 @@ class TRTExporter(io.ComfyNode):
                 io.Model.Input(id="model_patcher", display_name="MODEL"),
                 io.Int.Input(id="opt_width", display_name="Opt Width", default=512, min=1), #Width First for comfyui
                 io.Int.Input(id="opt_height", display_name="Opt Height", default=512, min=1),
+                io.Int.Input(id="opt_batch_size", display_name="Opt Batch Size", default=1, min=1),
+
                 io.Int.Input(id="opt_context_mult", display_name="Opt Context Multiplier", default=1, min=1),
                 io.Int.Input(id="num_video_frames", display_name="Num Video Frames", default=1, min=1),
                 io.String.Input(id="filename_prefix", display_name="Filename Prefix", default="tensorrt/"),
-
-                io.Int.Input(id="min_batch_size", display_name="Min Batch Size", default=0, min=0),
-                io.Int.Input(id="max_batch_size", display_name="Max Batch Size", default=0, min=0),
 
                 io.Int.Input(id="min_width", display_name="Min Width", default=0, min=0),
                 io.Int.Input(id="max_width", display_name="Max Width", default=0, min=0),
 
                 io.Int.Input(id="min_height", display_name="Min Height", default=0, min=0),
                 io.Int.Input(id="max_height", display_name="Max Height", default=0, min=0),
+
+                io.Int.Input(id="min_batch_size", display_name="Min Batch Size", default=0, min=0),
+                io.Int.Input(id="max_batch_size", display_name="Max Batch Size", default=0, min=0),
 
                 io.Int.Input(id="min_context_mult", display_name="Min Context Multiplier", default=0, min=0),
                 io.Int.Input(id="max_context_mult", display_name="Max Context Multiplier", default=0, min=0),
