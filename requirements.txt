@@ -1,8 +1,21 @@
+# For onnxruntime-gpu
+coloredlogs
+flatbuffers
+numpy
+packaging
+protobuf
+sympy
+
 # RMSNormalization is supported in ONNX Opset 23 and later.
-# We require onnx 1.18.0 and onnxruntime 1.20.0 or later for native support.
+# We require onnx 1.18.0 and onnxruntime 1.24.1 or later for native support.
+--extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/
 onnx>=1.18.0
-onnxruntime-gpu>=1.20.0  # Use onnxruntime-gpu for TensorRT execution
+onnxruntime-gpu>=1.24.1  # Use onnxruntime-gpu for TensorRT execution
+onnxscript
 
 # RMSNormalization is natively supported in TensorRT 10.15.1 and later.
 # Ensure your system TensorRT library matches this version.
-tensorrt>=10.15.1
+--extra-index-url https://pypi.nvidia.com
+tensorrt-cu12-libs>=10.15.1
+tensorrt-cu12-bindings>=10.15.1
+tensorrt-cu12>=10.15.1

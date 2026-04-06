@@ -25,6 +25,9 @@ Current architecture routing officially supports:
 * SVD (Stable Video Diffusion)
 
 ## 📦 Installation
+
+**Requirement: This node requires a CUDA 12.x environment, with CUDA 12.8 being highly recommended for optimal performance and stability. If you are using CUDA 11, please update your drivers and toolkit. Additionally, CUDA 13.x is not currently supported at this time.**
+
 1. Clone this repository into your `ComfyUI/custom_nodes` directory:
    ```bash
    cd ComfyUI/custom_nodes
@@ -41,6 +44,28 @@ Current architecture routing officially supports:
    * **Standard Models**: Generates a `.engine` file.
    * **Anima Architecture**: Generates a `.onnx_and_engine` compound file to handle its specific graph requirements.
 2. **Loading**: Use the "TensorRT Loader Reforge" node to load your newly baked engine/file from the output directory and enjoy massive performance gains.
+
+## 🤝 Contributing & Community
+
+### 📢 Help Us Reforge!
+If you have tested a specific environment, please let us know in the Issues/Discussions using this format.
+
+To easily collect your package versions, you can run the following command in your terminal:
+```bash
+python -c "import importlib.metadata; pkgs=['coloredlogs','flatbuffers','numpy','packaging','protobuf','sympy','onnx','onnxruntime-gpu','onnxscript','tensorrt-cu12','tensorrt-cu12-libs','tensorrt-cu12-bindings']; [print(f'{p}: {importlib.metadata.version(p)}') for p in pkgs if __import__('contextlib').suppress(importlib.metadata.PackageNotFoundError) or importlib.metadata.distribution(p)]"
+```
+*(Note: You can copy and paste the command above, or refer to the specific versions manually.)*
+
+- **GPU**: (e.g., RTX 4090)
+- **CUDA Version**: (e.g., 12.8)
+- **Package Versions**: (Paste the output of the command above)
+- **Result**: (Success / Specific Error Message)
+
+### 🗣️ Join the Discussion
+We are actively discussing compatibility with the upcoming CUDA 13.x and next-gen model support. Check out our Compatibility Discussion Thread to share your insights!
+
+### 👨‍💻 Developer's Note
+"Reforge" aims for maximum performance, which often means living on the bleeding edge. While I primarily test on CUDA 12.4, I'm eager to make this project robust for CUDA 13.0 and beyond with your help.
 
 ---
 *Built with ❤️ for the ComfyUI community.*
