@@ -65,7 +65,7 @@ python -c "import importlib.metadata; pkgs=['coloredlogs','flatbuffers','numpy',
 We are actively discussing compatibility with the upcoming CUDA 13.x and next-gen model support. Check out our Compatibility Discussion Thread to share your insights!
 
 ### 👨‍💻 Developer's Note
-"Reforge" aims for maximum performance, which often means living on the bleeding edge. While I primarily test on CUDA 12.4, I'm eager to make this project robust for CUDA 13.0 and beyond with your help.
+"Reforge" aims for maximum performance, which often means living on the bleeding edge. While I primarily test on CUDA 12.8, I'm eager to make this project robust for CUDA 13.0 and beyond with your help.
 
 ---
 *Built with ❤️ for the ComfyUI community.*
