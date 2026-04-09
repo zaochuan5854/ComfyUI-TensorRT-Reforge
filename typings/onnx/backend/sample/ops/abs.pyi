@@ -1,0 +1,3 @@
+import numpy as np
+
+def abs(input: np.ndarray) -> np.ndarray: ...

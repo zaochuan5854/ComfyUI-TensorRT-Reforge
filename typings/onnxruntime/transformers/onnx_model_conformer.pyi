@@ -1,0 +1,13 @@
+from _typeshed import Incomplete
+from fusion_options import FusionOptions as FusionOptions
+from onnx_model_bert import BertOnnxModel
+
+logger: Incomplete
+
+class ConformerOnnxModel(BertOnnxModel):
+    attention_mask: Incomplete
+    attention_fusion: Incomplete
+    def __init__(self, model, num_heads, hidden_size) -> None: ...
+    def optimize(self, options: FusionOptions | None = None, add_dynamic_axes: bool = False): ...
+    def fuse_attention(self) -> None: ...
+    def preprocess(self) -> None: ...

@@ -1,0 +1,3 @@
+from onnx.reference.ops._op import OpRunUnaryNum as OpRunUnaryNum
+
+class Cos(OpRunUnaryNum): ...

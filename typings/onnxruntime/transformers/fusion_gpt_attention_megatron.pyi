@@ -1,0 +1,16 @@
+from _typeshed import Incomplete
+from fusion_gpt_attention import FusionGptAttentionPastBase
+from onnx_model import OnnxModel as OnnxModel
+
+logger: Incomplete
+
+def is_close(value, expected_value): ...
+
+class FusionGptAttentionMegatron(FusionGptAttentionPastBase):
+    def __init__(self, model: OnnxModel, num_heads: int) -> None: ...
+    prune_graph: bool
+    def fuse_attention_node(self, matmul_before_split, add_before_split, past, present, input, reshape_qkv, mask) -> None: ...
+    mask_filter_value: Incomplete
+    def match_mask(self, sub_qk, mul_qk, matmul_qk, layernorm_before_attention): ...
+    num_heads: Incomplete
+    def fuse(self, normalize_node, input_name_to_nodes, output_name_to_node) -> None: ...

@@ -1,0 +1,13 @@
+from _typeshed import Incomplete
+from onnx.reference.op_run import OpRun as OpRun
+
+class CommonRNN(OpRun):
+    num_directions: int
+    f1: Incomplete
+    f2: Incomplete
+    n_outputs: Incomplete
+    def __init__(self, onnx_node, run_params) -> None: ...
+    def choose_act(self, name, alpha, beta): ...
+
+class RNN_7(CommonRNN): ...
+class RNN_14(CommonRNN): ...

@@ -1,0 +1,9 @@
+from onnx.reference.ops.aionnxml._op_run_aionnxml import OpRunAiOnnxMl as OpRunAiOnnxMl
+
+class Normalizer(OpRunAiOnnxMl):
+    @staticmethod
+    def norm_max(x): ...
+    @staticmethod
+    def norm_l1(x): ...
+    @staticmethod
+    def norm_l2(x): ...

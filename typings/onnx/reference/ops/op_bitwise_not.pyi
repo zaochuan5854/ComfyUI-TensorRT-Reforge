@@ -1,0 +1,3 @@
+from onnx.reference.ops._op import OpRunUnary as OpRunUnary
+
+class BitwiseNot(OpRunUnary): ...

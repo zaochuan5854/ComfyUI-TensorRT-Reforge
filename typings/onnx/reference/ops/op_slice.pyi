@@ -1,0 +1,9 @@
+from onnx.reference.ops._op import OpRun as OpRun
+
+class SliceCommon(OpRun): ...
+
+class Slice_10(SliceCommon):
+    def __init__(self, onnx_node, run_params) -> None: ...
+
+class Slice_1(SliceCommon):
+    def __init__(self, onnx_node, run_params) -> None: ...

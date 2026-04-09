@@ -1,0 +1,6 @@
+import numpy as np
+from onnx.reference.op_run import OpRun as OpRun
+
+def common_reference_implementation(data: np.ndarray, shape: np.ndarray) -> np.ndarray: ...
+
+class Expand(OpRun): ...

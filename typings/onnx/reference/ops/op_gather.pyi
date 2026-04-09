@@ -1,0 +1,3 @@
+from onnx.reference.op_run import OpRun as OpRun
+
+class Gather(OpRun): ...

@@ -1,0 +1,14 @@
+class AttributeType:
+    UNDEFINED: int
+    FLOAT: int
+    INT: int
+    STRING: int
+    TENSOR: int
+    GRAPH: int
+    FLOATS: int
+    INTS: int
+    STRINGS: int
+    TENSORS: int
+    GRAPHS: int
+    SPARSE_TENSOR: int
+    SPARSE_TENSORS: int

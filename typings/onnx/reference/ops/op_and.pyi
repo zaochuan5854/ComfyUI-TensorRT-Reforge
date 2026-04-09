@@ -1,0 +1,3 @@
+from onnx.reference.ops._op import OpRunBinary as OpRunBinary
+
+class And(OpRunBinary): ...

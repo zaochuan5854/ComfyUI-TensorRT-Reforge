@@ -1,0 +1,5 @@
+from ..quant_utils import QuantizedValue as QuantizedValue, QuantizedValueType as QuantizedValueType, TENSOR_NAME_QUANT_SUFFIX as TENSOR_NAME_QUANT_SUFFIX, attribute_to_kwarg as attribute_to_kwarg, ms_domain as ms_domain
+from .base_operator import QuantOperatorBase as QuantOperatorBase
+
+class QLinearSoftmax(QuantOperatorBase):
+    def quantize(self): ...

@@ -1,0 +1,3 @@
+from onnx.reference.ops._op_common_random import _CommonRandom
+
+class RandomNormal(_CommonRandom): ...

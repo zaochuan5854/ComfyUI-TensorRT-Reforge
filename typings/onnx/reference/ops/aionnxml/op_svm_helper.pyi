@@ -1,0 +1,16 @@
+import numpy as np
+from _typeshed import Incomplete
+from typing import Any
+
+class SVMAttributes:
+    def __init__(self) -> None: ...
+    def add(self, name: str, value: Any) -> None: ...
+
+class SVMCommon:
+    atts: Incomplete
+    gamma_: Incomplete
+    coef0_: Incomplete
+    degree_: Incomplete
+    def __init__(self, **kwargs) -> None: ...
+    def kernel_dot(self, pA: np.ndarray, pB: np.ndarray, kernel: str) -> np.ndarray: ...
+    def run_reg(self, X: np.ndarray) -> np.ndarray: ...
