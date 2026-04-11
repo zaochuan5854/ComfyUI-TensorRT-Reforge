@@ -11,6 +11,7 @@ This project is a direct evolution of the original [ComfyUI_TensorRT](https://gi
 The generative AI landscape moves incredibly fast, bringing new and structurally complex models every month. We "reforged" the original codebase to ensure high reliability and broad compatibility across different model families:
 
 * **Next-Gen "Anima" Architecture Support**: Fully optimized for the latest **Anima** model architecture. Reforge handles its unique structural requirements during the export process, ensuring you can run this cutting-edge model with full TensorRT acceleration.
+* **Dynamic LoRA Support via Refit (Experimental)**: Unlike traditional TensorRT implementations that require a full engine rebuild for each LoRA, Reforge utilizes NVIDIA's **Refit** technology. This allows for near-instant weight swapping, enabling you to use LoRAs with TensorRT speed without the agonizing wait.
 * **Dynamo-Powered ONNX Exporting**: We utilize PyTorch's Dynamo (`dynamo=True`) alongside traditional tracing. This ensures significantly higher success rates when exporting mathematically complex architectures that previously failed in older versions.
 * **Dynamic Opset Management**: Automatically adjusts ONNX Opsets (e.g., 18 vs 25) based on the specific model's requirements—essential for supporting advanced features in models like Anima and Flux.
 
@@ -37,13 +38,36 @@ Current architecture routing officially supports:
    ```bash
    pip install -r requirements.txt
    ```
-*(Note: You must have TensorRT and ONNX Runtime properly installed in your environment).*
 
-## 🛠 Usage
-1. **Exporting**: Use the "TensorRT Exporter Reforge" node. Plug in your model patcher, define your optimal profiles (batch size, width, height, context multiplier), and generate the model file.
-   * **Standard Models**: Generates a `.engine` file.
-   * **Anima Architecture**: Generates a `.onnx_and_engine` compound file to handle its specific graph requirements.
-2. **Loading**: Use the "TensorRT Loader Reforge" node to load your newly baked engine/file from the output directory and enjoy massive performance gains.
+## 🧠 Technical Deep Dive: Why is it so fast?
+
+### The Power of TensorRT
+TensorRT optimizes your model specifically for your NVIDIA GPU hardware through:
+* **Kernel Fusion**: Combines multiple operations (like ReLU and Convolution) into a single GPU step to reduce memory overhead.
+* **Optimal Path Selection**: Automatically selects the fastest mathematical algorithms for your specific architecture (e.g., Ada Lovelace, Ampere).
+
+### "Refit" Mechanism: The LoRA Game Changer
+The biggest hurdle for TensorRT in Stable Diffusion was its "static" nature. Typically, changing a weight meant rebuilding the entire engine (3-10 minutes). 
+
+**Reforge** solves this by:
+1.  **Marking Weight Buffers**: During the export process, we mark the model's weights as "refittable."
+2.  **Weight Injection**: When you apply a LoRA, Reforge calculates the weight deltas ($W + \Delta W$) and injects them directly into the pre-optimized engine structure.
+3.  **Result**: You get the "Formula 1" speed of TensorRT with the flexibility of LoRA switching in seconds, not minutes.
+
+## 🛠 Detailed Usage
+
+### 1. Exporting (The "Exporter" Node)
+* **Input**: Connect your standard `.safetensors` model.
+* **Profiles**: Define your target resolution (Width/Height) and Batch Size. 
+    * *Note: TensorRT is highly optimized for specific shapes. Fixing the resolution provides the maximum speed boost.*
+* **LoRA Compatibility**: You **must** enable the LoRA option during export if you intend to use them later. This generates a unique `.bundle` file containing the necessary metadata for Refit.
+
+### 2. Loading & Latent Setup
+* Use the **TensorRT Loader Reforge** node to load the generated engine.
+* **CRITICAL**: Your input Latent size (Width/Height) and Batch Size must match the parameters defined during the Export step. Discrepancies will result in a runtime error.
+
+#### Workflow Image
+![ss](readme_images/workflow_anima.png)
 
 ## 🤝 Contributing & Community
 
