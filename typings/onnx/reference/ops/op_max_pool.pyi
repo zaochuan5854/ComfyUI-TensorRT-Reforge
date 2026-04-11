@@ -1,0 +1,3 @@
+from onnx.reference.ops._op_common_pool import CommonPool as CommonPool
+
+class MaxPool(CommonPool): ...

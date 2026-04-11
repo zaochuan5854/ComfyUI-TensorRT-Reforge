@@ -1,0 +1,9 @@
+from _typeshed import Incomplete
+from onnx.reference.op_run import OpRun as OpRun
+
+class Squeeze_1(OpRun): ...
+class Squeeze_11(Squeeze_1): ...
+
+class Squeeze_13(OpRun):
+    axes: Incomplete
+    def __init__(self, onnx_node, run_params) -> None: ...

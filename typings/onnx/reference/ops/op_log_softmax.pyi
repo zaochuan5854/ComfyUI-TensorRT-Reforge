@@ -1,0 +1,3 @@
+from onnx.reference.ops.op_softmax import Softmax as Softmax
+
+class LogSoftmax(Softmax): ...

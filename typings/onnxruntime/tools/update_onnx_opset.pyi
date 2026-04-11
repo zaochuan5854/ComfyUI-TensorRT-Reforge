@@ -1,0 +1,3 @@
+from .onnx_model_utils import update_onnx_opset as update_onnx_opset
+
+def update_onnx_opset_helper() -> None: ...

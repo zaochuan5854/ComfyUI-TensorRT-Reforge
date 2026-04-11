@@ -1,0 +1,3 @@
+import onnx
+
+def to_text(proto: onnx.ModelProto | onnx.FunctionProto | onnx.GraphProto) -> str: ...

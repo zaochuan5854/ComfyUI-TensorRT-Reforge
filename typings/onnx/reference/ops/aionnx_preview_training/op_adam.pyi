@@ -1,0 +1,3 @@
+from onnx.reference.ops.aionnx_preview_training._op_run_training import OpRunTraining as OpRunTraining
+
+class Adam(OpRunTraining): ...

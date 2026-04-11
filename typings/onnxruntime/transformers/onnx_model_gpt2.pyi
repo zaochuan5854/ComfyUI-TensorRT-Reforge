@@ -1,0 +1,9 @@
+from _typeshed import Incomplete
+from onnx_model_bert import BertOnnxModel
+
+logger: Incomplete
+
+class Gpt2OnnxModel(BertOnnxModel):
+    def __init__(self, model, num_heads, hidden_size) -> None: ...
+    def fuse_attention(self) -> None: ...
+    def postprocess(self) -> None: ...

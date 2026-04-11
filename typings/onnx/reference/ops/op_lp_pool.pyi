@@ -1,0 +1,3 @@
+from onnx.reference.ops.op_pool_common import CommonPool as CommonPool
+
+class LpPool(CommonPool): ...

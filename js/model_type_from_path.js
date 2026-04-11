@@ -10,7 +10,7 @@ function inferModelType(node) {
     const modelPath = modelPathWidget.value;
     const modelBasename = modelPath.split(/[\\/]/).pop();
 
-    const match = modelBasename.match(/^[^.]+\.([^.]+)\.(?:engine|onnx_and_engine)$/);
+    const match = modelBasename.match(/^[^.]+\.([^.]+)\.(?:engine|bundle)$/);
 
     if (match) {
         const inferredModelType = match[1];

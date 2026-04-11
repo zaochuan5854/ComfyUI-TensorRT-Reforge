@@ -1,0 +1,3 @@
+from onnx.reference.ops._op_common_window import _CommonWindow
+
+class HannWindow(_CommonWindow): ...

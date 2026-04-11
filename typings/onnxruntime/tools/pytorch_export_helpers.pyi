@@ -1,0 +1,3 @@
+import torch
+
+def infer_input_info(module: torch.nn.Module, *inputs, **kwargs): ...

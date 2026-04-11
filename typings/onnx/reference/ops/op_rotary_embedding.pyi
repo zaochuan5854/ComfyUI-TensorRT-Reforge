@@ -1,0 +1,6 @@
+import numpy as np
+from onnx.reference.op_run import OpRun as OpRun
+
+def rotary_embedding(input: np.ndarray, cos_cache: np.ndarray, sin_cache: np.ndarray, position_ids: np.ndarray | None = None, interleaved=None, rotary_embedding_dim=None, num_heads=None) -> np.ndarray: ...
+
+class RotaryEmbedding(OpRun): ...

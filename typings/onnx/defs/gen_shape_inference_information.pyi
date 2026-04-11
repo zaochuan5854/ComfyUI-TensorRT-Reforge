@@ -1,0 +1,3 @@
+from onnx import defs as defs
+
+def main() -> None: ...

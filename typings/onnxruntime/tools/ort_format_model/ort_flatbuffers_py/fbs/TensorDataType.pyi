@@ -1,0 +1,22 @@
+class TensorDataType:
+    UNDEFINED: int
+    FLOAT: int
+    UINT8: int
+    INT8: int
+    UINT16: int
+    INT16: int
+    INT32: int
+    INT64: int
+    STRING: int
+    BOOL: int
+    FLOAT16: int
+    DOUBLE: int
+    UINT32: int
+    UINT64: int
+    COMPLEX64: int
+    COMPLEX128: int
+    BFLOAT16: int
+    FLOAT8E4M3FN: int
+    FLOAT8E4M3FNUZ: int
+    FLOAT8E5M2: int
+    FLOAT8E5M2FNUZ: int

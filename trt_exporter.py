@@ -1,32 +1,24 @@
-from typing_extensions import TYPE_CHECKING
-if TYPE_CHECKING or __name__ == "__main__":
-    import sys
-    from pathlib import Path
-    comfy_path = Path(__file__).parent.parent.parent
-    sys.path.append(str(comfy_path))
+from typing import Any, NamedTuple, Optional
+from typing_extensions import override, cast, assert_never, TypedDict, Unpack
 
 import os
 import time
+import json
+import tqdm
+import numpy as np
+from enum import Enum
 
 import torch
 from torch import nn
-import tensorrt as trt # pyright: ignore[reportMissingTypeStubs]
+import tensorrt as trt
+import onnx
 
-import folder_paths
 from comfy_api.latest import io
-from comfy.model_patcher import ModelPatcher
 from comfy.ldm.anima.model import LLMAdapter
-from comfy import model_base, model_management
+from comfy import model_base, model_management, sd
+import folder_paths
 
-from enum import Enum
-from typing import Any, NamedTuple
-from typing_extensions import override, cast, assert_never, no_type_check, TypedDict, Unpack
-
-try:
-    from .utils import UnifiedModel
-except ImportError:
-    # for debugging
-    from utils import UnifiedModel # type: ignore
+from .trt_utils import ModelBundle
 
 class ModelMetaInfo(NamedTuple):
     model_type: type
@@ -56,13 +48,14 @@ class SupportedModelType(Enum):
         return l
 
 class TRTSpec(TypedDict):
-    model_patcher: ModelPatcher
+    model_name: str
+    filename_prefix: str
+    enable_lora: bool
 
     opt_batch_size: int
     opt_width: int
     opt_height: int
     opt_context_mult: int
-    filename_prefix: str
 
     min_batch_size: int
     max_batch_size: int
@@ -84,10 +77,31 @@ def trt_spec_to_string(spec: TRTSpec) -> str:
                 spec["min_height"] == spec["max_height"] == 0 and \
                 spec["min_context_mult"] == spec["max_context_mult"] == 0
     if is_static:
-        return f"W{spec['opt_width']}_H{spec['opt_height']}_BS{spec['opt_batch_size']}_CM{spec['opt_context_mult']}"
+        s = f"W{spec['opt_width']}_H{spec['opt_height']}_BS{spec['opt_batch_size']}_CM{spec['opt_context_mult']}"
     else:
-        return f"W{spec['min_width']}-{spec['opt_width']}-{spec['max_width']}_H{spec['min_height']}-{spec['opt_height']}-{spec['max_height']}_BS{spec['min_batch_size']}-{spec['opt_batch_size']}-{spec['max_batch_size']}_CM{spec['min_context_mult']}-{spec['opt_context_mult']}-{spec['max_context_mult']}"
+        s = f"W{spec['min_width']}-{spec['opt_width']}-{spec['max_width']}_H{spec['min_height']}-{spec['opt_height']}-{spec['max_height']}_BS{spec['min_batch_size']}-{spec['opt_batch_size']}-{spec['max_batch_size']}_CM{spec['min_context_mult']}-{spec['opt_context_mult']}-{spec['max_context_mult']}"
 
+    if spec["num_video_frames"] > 1:
+        s += f"_VF{spec['num_video_frames']}"
+
+    if spec["enable_lora"]:
+        s += "_LoRA"
+
+    return s
+
+def get_model_name_options() -> list[str]:
+    checkpoint_names = folder_paths.get_filename_list("checkpoints")
+    diffusion_names = folder_paths.get_filename_list("diffusion_models")
+    seen: set[str] = set()
+    options: list[str] = []
+    model_suffixes = [".safetensors", ".ckpt"]
+    for name in checkpoint_names + diffusion_names:
+        if not any(name.endswith(suffix) for suffix in model_suffixes):
+            continue
+        if name not in seen:
+            options.append(name)
+            seen.add(name)
+    return options
 class TRTExporter(io.ComfyNode):
     """
     Exports a TensorRT engine file and its associated ONNX file (if required) from a given model patcher and specifications.
@@ -95,16 +109,23 @@ class TRTExporter(io.ComfyNode):
 
     @classmethod
     def define_schema(cls) -> io.Schema:
+        model_name_options = get_model_name_options()
         return io.Schema(
             node_id="TensorRTExporterNode",
             display_name="TensorRT Exporter Reforge",
             category="TensorRT",
             inputs=[
-                io.Model.Input(id="model_patcher", display_name="MODEL"),
+                io.Combo.Input(
+                    id="model_name",
+                    display_name="Model Name",
+                    options=model_name_options,
+                    default=model_name_options[0] if model_name_options else ""
+                ),
                 io.Int.Input(id="opt_width", display_name="Opt Width", default=512, min=1), #Width First for comfyui
                 io.Int.Input(id="opt_height", display_name="Opt Height", default=512, min=1),
                 io.Int.Input(id="opt_batch_size", display_name="Opt Batch Size", default=1, min=1),
 
+                io.Boolean.Input(id="enable_lora", display_name="Enable LoRA (Experimental🧪)", default=False),
                 io.Int.Input(id="opt_context_mult", display_name="Opt Context Multiplier", default=1, min=1),
                 io.Int.Input(id="num_video_frames", display_name="Num Video Frames", default=1, min=1),
                 io.String.Input(id="filename_prefix", display_name="Filename Prefix", default="tensorrt/"),
@@ -127,7 +148,33 @@ class TRTExporter(io.ComfyNode):
     @classmethod
     @override
     def execute(cls, **kwargs: Unpack[TRTSpec]) -> io.NodeOutput:
-        model_patcher = kwargs["model_patcher"]
+        model_name = kwargs["model_name"]
+
+        checkpoint_path = folder_paths.get_full_path("checkpoints", model_name)
+        diffusion_path = folder_paths.get_full_path("diffusion_models", model_name)
+
+        has_checkpoint = checkpoint_path is not None
+        has_diffusion = diffusion_path is not None
+        if has_checkpoint and has_diffusion:
+            raise ValueError(
+                f"Model name exists in both checkpoints and diffusion_models: {model_name}. "
+                "Please rename one of them."
+            )
+        if has_checkpoint:
+            model_patcher, *_ = sd.load_checkpoint_guess_config( # pyright: ignore[reportUnknownMemberType]
+                checkpoint_path,
+                output_vae=False,
+                output_clip=False,
+                output_clipvision=False,
+                embedding_directory=folder_paths.get_folder_paths("embeddings")
+            )
+            if model_patcher is None:
+                raise ValueError(f"Failed to load model patcher from checkpoint: {checkpoint_path}")
+        elif has_diffusion:
+            model_patcher = sd.load_diffusion_model(diffusion_path) # pyright: ignore[reportUnknownMemberType]
+        else:
+            raise FileNotFoundError(f"Model not found in checkpoints or diffusion_models: {model_name}")
+
         min_batch_size, opt_batch_size, max_batch_size = kwargs["min_batch_size"], kwargs["opt_batch_size"], kwargs["max_batch_size"]
         min_height, opt_height, max_height = kwargs["min_height"], kwargs["opt_height"], kwargs["max_height"]
         min_width, opt_width, max_width = kwargs["min_width"], kwargs["opt_width"], kwargs["max_width"]
@@ -148,11 +195,11 @@ class TRTExporter(io.ComfyNode):
         model_management.unload_all_models()
         model_management.load_models_gpu([model_patcher], force_patch_weights=True, force_full_load=True) # pyright: ignore[reportUnknownMemberType]
         
-        diffusion_model = cast(model_base.BaseModel, model_patcher.model)
+        diffusion_model = cast(model_base.BaseModel, model_patcher.model) # pyright: ignore[reportUnknownMemberType]
         diffuser = diffusion_model.diffusion_model
 
         model_config: Any = diffusion_model.model_config
-        unet_config: dict[str, Any]|None = None
+        unet_config: Optional[dict[str, Any]] = None
         if hasattr(model_config, "unet_config"):
             unet_config = cast(dict[str, Any], model_config.unet_config)
         
@@ -195,6 +242,8 @@ class TRTExporter(io.ComfyNode):
             case _:
                 opset_version = 18
 
+        enable_lora = kwargs["enable_lora"]
+
         torch.onnx.export( # pyright: ignore[reportUnknownMemberType]
             tracing_model.eval(),
             inputs,
@@ -205,13 +254,19 @@ class TRTExporter(io.ComfyNode):
             opset_version=opset_version,
             dynamic_shapes=dynamic_shapes,
             dynamo=True,
+            do_constant_folding=False if enable_lora else True, # Constant folding can interfere with LoRA weight mapping, so disable it when LoRA is enabled
         )
+
+        if enable_lora:
+            print("[TensorRT] Analyzing model for LoRA ...")
+            weights_name_mapping, weights_shape_mapping = get_weights_mapping(diffusion_model.state_dict(), output_onnx)
+            output_mapping = os.path.normpath(os.path.join(os.path.dirname(output_onnx), "weights_mapping.json"))
+            json.dump({"weights_name_mapping": weights_name_mapping, "weights_shape_mapping": weights_shape_mapping}, open(output_mapping, "w"), indent=4)
+        else:
+            output_mapping = None
 
         model_management.unload_all_models()
         model_management.soft_empty_cache()
-
-        if trt is None:
-            raise RuntimeError("TensorRT is not installed but required for compilation.")
 
         print("[TensorRT] Building TensorRT Engine ...")
         
@@ -221,26 +276,46 @@ class TRTExporter(io.ComfyNode):
         trt_output_path = os.path.join(output_dir, f"{basename}.engine")
 
         build_tensorrt_engine(
-            output_onnx, input_names, inputs_shapes_min, inputs_shapes_opt, inputs_shapes_max, trt_output_path,
+            output_onnx, input_names, inputs_shapes_min, inputs_shapes_opt, inputs_shapes_max, trt_output_path, enable_lora=kwargs["enable_lora"]
         )
 
         print(f"[TensorRT] Conversion completed. Saved to {trt_output_path}")
 
-        if model_type == SupportedModelType.Anima:
-            # Require llm_adapter
+        required_llmadapter = model_type == SupportedModelType.Anima
+
+        if not (enable_lora or required_llmadapter):
+            return io.NodeOutput()
+
+        # Need to merge files into a bundle for easier distribution
+        bundle_out = os.path.join(output_dir, f"{basename}.bundle")
+        if required_llmadapter:
             print("[TensorRT] Exporting LLMAdapter to ONNX ...")
-            llm_adapter = cast(LLMAdapter, diffuser.llm_adapter) # pyright: ignore[reportUnknownMemberType]
+            llm_adapter = cast(LLMAdapter, diffuser.llm_adapter)
             output_onnx_llm_adapter = os.path.normpath(os.path.join(temp_dir, f"trt_{time.time()}", "llm_adapter.onnx"))
             os.makedirs(os.path.dirname(output_onnx_llm_adapter), exist_ok=True)
             export_anima_llmadapter_to_onnx(llm_adapter, output_onnx_llm_adapter, dtype)
-            merged_output_path = os.path.join(output_dir, f"{basename}.onnx_and_engine")
-            UnifiedModel.unify_onnx_and_trt_engine(output_onnx_llm_adapter, trt_output_path, merged_output_path) # pyright: ignore[reportUnknownMemberType]
-            os.remove(trt_output_path)
             print(f"[TensorRT] LLMAdapter ONNX export completed. Saved to {output_onnx_llm_adapter}")
+            bundle = ModelBundle.from_onnx_and_trt_engine(
+                onnx_path=output_onnx_llm_adapter,
+                trt_engine_path=trt_output_path,
+                output_path=bundle_out,
+                replace_source=True,
+            )
+        else:
+            bundle = ModelBundle.from_trt_engine(
+                trt_engine_path=trt_output_path,
+                output_path=bundle_out,
+                replace_source=True
+            )
 
+        if enable_lora and output_mapping:
+            json_mapping = json.load(open(output_mapping))
+            bundle.save_weights_mapping(json_mapping["weights_name_mapping"], json_mapping["weights_shape_mapping"])
+            bundle.metadata = {"source_model": checkpoint_path if has_checkpoint else diffusion_path}
+        
         return io.NodeOutput()
-
-def get_context_features(model_type: SupportedModelType, unet_config: dict[str, Any]|None) -> tuple[int, int, int, torch.dtype]:
+        
+def get_context_features(model_type: SupportedModelType, unet_config: Optional[dict[str, Any]] = None) -> tuple[int, int, int, torch.dtype]:
     match model_type:
         case SupportedModelType.SD3:
             if unet_config:
@@ -308,7 +383,7 @@ def get_context_features(model_type: SupportedModelType, unet_config: dict[str, 
     return context_dim, context_len, context_len_min, dtype
 
 def build_onnx_tracing_input(
-    unet_config: dict[str, Any]|None, model_type: SupportedModelType,
+    unet_config: Optional[dict[str, Any]], model_type: SupportedModelType,
     bs_min: int, bs_opt: int, bs_max: int,
     ctx_min: int, ctx_opt: int, ctx_max: int,
     min_height: int, opt_height: int, max_height: int,
@@ -381,8 +456,7 @@ def build_onnx_tracing_input(
     
     return inputs, inputs_shapes_min, inputs_shapes_opt, inputs_shapes_max, input_names, output_names, dynamic_shapes
 
-
-def build_onnx_tracing_model(is_svd: bool, diffuser: nn.Module, input_names: list[str], transformer_options: dict[str, Any], num_video_frames: int|None) -> nn.Module:
+def build_onnx_tracing_model(is_svd: bool, diffuser: nn.Module, input_names: list[str], transformer_options: dict[str, Any], num_video_frames: Optional[int]) -> nn.Module:
     
     if is_svd:
         if num_video_frames is None:
@@ -408,7 +482,7 @@ def build_onnx_tracing_model(is_svd: bool, diffuser: nn.Module, input_names: lis
                 self.diffuser = diffuser
                 self.transformer_options = transformer_options
 
-            def forward(self, latent: torch.Tensor, timestep: torch.Tensor, context: torch.Tensor, vector_cond: torch.Tensor|None = None, guidance: torch.Tensor|None = None) -> torch.Tensor:
+            def forward(self, latent: torch.Tensor, timestep: torch.Tensor, context: torch.Tensor, vector_cond: Optional[torch.Tensor] = None, guidance: Optional[torch.Tensor] = None) -> torch.Tensor:
                 # """kwargs is not supported in torch.onnx.export""" with dynamo=True, so we need to handle optional inputs manually
                 if vector_cond is not None and guidance is not None:
                     return self.diffuser(latent, timestep, context, vector_cond, guidance, transformer_options=self.transformer_options)
@@ -421,7 +495,6 @@ def build_onnx_tracing_model(is_svd: bool, diffuser: nn.Module, input_names: lis
 
         return TracingModel(diffuser, transformer_options).eval()
 
-@no_type_check
 def build_tensorrt_engine(
     output_onnx: str,
     input_names: list[str],
@@ -429,24 +502,27 @@ def build_tensorrt_engine(
     inputs_shapes_opt: tuple[tuple[int, ...], ...],
     inputs_shapes_max: tuple[tuple[int, ...], ...],
     output_path: str,
-) -> tuple[str, str, str]:
+    enable_lora: bool,
+) -> None:
     if trt is None:
         raise RuntimeError("TensorRT is not installed but required for compilation.")
 
     logger = trt.Logger(trt.Logger.INFO)
     builder = trt.Builder(logger)
-    trt.init_libnvinfer_plugins(logger, "")
+    trt.init_libnvinfer_plugins(logger, "") # pyright: ignore[reportArgumentType]
 
     network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED))
     parser = trt.OnnxParser(network, logger)
     success = parser.parse_from_file(output_onnx)
     for idx in range(parser.num_errors):
-        print(parser.get_error(idx))
+        print(parser.get_error(idx)) # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
 
     if not success:
         raise RuntimeError("ONNX parse ERROR")
 
     config = builder.create_builder_config()
+    if enable_lora:
+        config.set_flag(trt.BuilderFlag.REFIT)
     profile = builder.create_optimization_profile()
     
     timing_cache_path = os.path.normpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "timing_cache.trt"))
@@ -457,22 +533,56 @@ def build_tensorrt_engine(
     timing_cache = config.create_timing_cache(buffer)
     config.set_timing_cache(timing_cache, ignore_mismatch=True)
     
-    # config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 8 * 1024 * 1024 * 1024)
-
     for k in range(len(input_names)):
-        profile.set_shape(input_names[k], inputs_shapes_min[k], inputs_shapes_opt[k], inputs_shapes_max[k])
+        profile.set_shape(input_names[k], trt.Dims(inputs_shapes_min[k]), trt.Dims(inputs_shapes_opt[k]), trt.Dims(inputs_shapes_max[k]))
         
     config.add_optimization_profile(profile)
 
     serialized_engine = builder.build_serialized_network(network, config)
-    if serialized_engine is None:
-        raise RuntimeError("Engine building failed.")
     
     with open(output_path, "wb") as f:
         f.write(serialized_engine)
 
     with open(timing_cache_path, "wb") as timing_cache_file:
         timing_cache_file.write(memoryview(config.get_timing_cache().serialize()))
+
+def get_weights_mapping(state_dict: dict[str, torch.Tensor], onnx_model_path: str) -> tuple[dict[str, str], dict[str, tuple[tuple[int, ...], bool]]]:
+
+    print("Loading ONNX model to extract initializers...")
+    model = onnx.load(onnx_model_path) # pyright: ignore[reportUnknownMemberType]
+    
+    initializer_hash_mapping: dict[str, tuple[int, tuple[int, ...]]] = {}
+    
+    print("Computing hashes for ONNX initializers...")
+    for initializer in tqdm.tqdm(model.graph.initializer, desc="ONNX Initializers"):
+        initializer_data = onnx.numpy_helper.to_array(initializer).astype(np.float16)
+        initializer_hash = hash(initializer_data.data.tobytes())
+        initializer_hash_mapping[initializer.name] = (initializer_hash, tuple(initializer_data.shape))
+
+    weights_name_mapping: dict[str, str] = {}
+    weights_shape_mapping: dict[str, tuple[tuple[int, ...], bool]] = {}
+    initializers_mapped: set[str] = set()
+
+    print("Computing hashes for PyTorch weights and finding matches...")
+    for wt_name, wt in tqdm.tqdm(state_dict.items(), desc="PyTorch Weights"):
+        wt_np = wt.to(torch.float32).cpu().detach().numpy().astype(np.float16)
+        wt_hash = hash(wt_np.data.tobytes())
+        wt_t_hash = hash(np.transpose(wt_np).data.tobytes())
+        
+        for initializer_name, (initializer_hash, initializer_shape) in initializer_hash_mapping.items():
+            if wt_hash == initializer_hash or wt_t_hash == initializer_hash:
+                assert initializer_name not in initializers_mapped, f"Duplicate mapping for {initializer_name}"
+                
+                weights_name_mapping[wt_name] = initializer_name
+                initializers_mapped.add(initializer_name)
+                
+                is_transpose = False if wt_hash == initializer_hash else True
+                weights_shape_mapping[wt_name] = (initializer_shape, is_transpose)
+                break
+                
+    print(f"Mapped {len(weights_name_mapping)} / {len(state_dict)} weights.")
+        
+    return weights_name_mapping, weights_shape_mapping
 
 def export_anima_llmadapter_to_onnx(llm_adapter: LLMAdapter, output_path: str, dtype: torch.dtype):
     device = cast(torch.device, model_management.get_torch_device())

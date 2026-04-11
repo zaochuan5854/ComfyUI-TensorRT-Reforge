@@ -1,0 +1,6 @@
+from ..quant_utils import QuantType as QuantType, attribute_to_kwarg as attribute_to_kwarg, ms_domain as ms_domain
+from .base_operator import QuantOperatorBase as QuantOperatorBase
+
+class LSTMQuant(QuantOperatorBase):
+    def __init__(self, onnx_quantizer, onnx_node) -> None: ...
+    def quantize(self) -> None: ...

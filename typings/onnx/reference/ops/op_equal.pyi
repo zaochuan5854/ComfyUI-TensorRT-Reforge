@@ -1,0 +1,3 @@
+from onnx.reference.ops._op import OpRunBinaryComparison as OpRunBinaryComparison
+
+class Equal(OpRunBinaryComparison): ...
