@@ -193,7 +193,7 @@ class TRTExporter(io.ComfyNode):
         num_video_frames = kwargs["num_video_frames"]
 
         model_management.unload_all_models()
-        model_management.load_models_gpu([model_patcher], force_patch_weights=True, force_full_load=True) # pyright: ignore[reportUnknownMemberType]
+        model_management.load_models_gpu([model_patcher], force_full_load=True) # pyright: ignore[reportUnknownMemberType]
         
         diffusion_model = cast(model_base.BaseModel, model_patcher.model) # pyright: ignore[reportUnknownMemberType]
         diffuser = diffusion_model.diffusion_model
