@@ -58,9 +58,8 @@ The biggest hurdle for TensorRT in Stable Diffusion was its "static" nature. Typ
 
 ### 1. Exporting (The "Exporter" Node)
 * **Important Note on Dynamic VRAM (Windows)**: In Windows environments, ONNX Export cannot run while Dynamic VRAM is enabled because memory management conflicts with PyTorch FX graph decomposition. You must start ComfyUI with the `--disable-dynamic-vram` command line argument to export models successfully. *(Note: Depending on your ComfyUI version, this argument might not be recognized. If ComfyUI fails to start due to an unrecognized argument error, you can safely omit it.)*
-* **Input**: Connect your standard `.safetensors` model.
-* **Profiles**: Define your target resolution (Width/Height) and Batch Size. 
-    * *Note: TensorRT is highly optimized for specific shapes. Fixing the resolution provides the maximum speed boost.*
+* **Profiles**: Select base model and define your target resolution (Width/Height) and Batch Size.
+     * *Note: TensorRT is highly optimized for specific shapes. Fixing the resolution provides the maximum speed boost.*
 * **LoRA Compatibility**: You **must** enable the LoRA option during export if you intend to use them later. This generates a unique `.bundle` file containing the necessary metadata for Refit.
 
 ### 2. Loading & Latent Setup
