@@ -261,6 +261,7 @@ class TRTExporter(io.ComfyNode):
             print("[TensorRT] Analyzing model for LoRA ...")
             weights_name_mapping, weights_shape_mapping = get_weights_mapping(diffusion_model.state_dict(), output_onnx)
             output_mapping = os.path.normpath(os.path.join(os.path.dirname(output_onnx), "weights_mapping.json"))
+            os.makedirs(os.path.dirname(output_mapping), exist_ok=True)
             json.dump({"weights_name_mapping": weights_name_mapping, "weights_shape_mapping": weights_shape_mapping}, open(output_mapping, "w"), indent=4)
         else:
             output_mapping = None
@@ -540,9 +541,11 @@ def build_tensorrt_engine(
 
     serialized_engine = builder.build_serialized_network(network, config)
     
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "wb") as f:
         f.write(serialized_engine)
 
+    os.makedirs(os.path.dirname(timing_cache_path), exist_ok=True)
     with open(timing_cache_path, "wb") as timing_cache_file:
         timing_cache_file.write(memoryview(config.get_timing_cache().serialize()))
 
