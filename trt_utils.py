@@ -6,8 +6,9 @@ import shutil
 import mmap
 import gc
 import torch
-import tensorrt as trt # pyright: ignore[reportMissingTypeStubs]
-import onnxruntime as ort # pyright: ignore[reportMissingTypeStubs]
+import tensorrt as trt
+import onnxruntime as ort
+import folder_paths
 from onnx import helper, TensorProto
 from onnx.onnx_pb import ModelProto
 from typing import Literal, Any, overload, Optional, TypeVar
@@ -22,10 +23,121 @@ class BundleEntryType(enum.Enum):
 WeightsNameMap = dict[str, str]
 WeightsShapeMap = dict[str, tuple[tuple[int, ...], bool]]
 
+
+def _to_safe_compare_path(path_value: str) -> str:
+    return os.path.normcase(os.path.realpath(path_value))
+
+
+def _is_within_root(path_value: str, root: str) -> bool:
+    safe_path = _to_safe_compare_path(path_value)
+    safe_root = _to_safe_compare_path(root)
+    try:
+        return os.path.commonpath([safe_root, safe_path]) == safe_root
+    except ValueError:
+        # Different drives on Windows or invalid path combinations.
+        return False
+
+
+def _ensure_no_traversal(path_value: str, label: str) -> None:
+    normalized = os.path.normpath(path_value)
+    if os.path.isabs(normalized):
+        raise ValueError(f"Absolute paths are not allowed in {label}: {path_value}")
+    parts = normalized.replace("\\", "/").split("/")
+    if any(part == ".." for part in parts):
+        raise ValueError(f"Path traversal detected in {label}: {path_value}")
+
+
+def _ensure_path_within_root(path_value: str, root: str, label: str) -> str:
+    if not _is_within_root(path_value, root):
+        raise ValueError(f"Path escapes allowed root in {label}: {path_value}")
+    return os.path.realpath(path_value)
+
+
+def ensure_output_path(path_value: str, label: str) -> str:
+    return _ensure_path_within_root(path_value, folder_paths.get_output_directory(), label)
+
+
+def ensure_temp_or_output_path(path_value: str, label: str) -> str:
+    if _is_within_root(path_value, folder_paths.get_output_directory()):
+        return os.path.realpath(path_value)
+    if _is_within_root(path_value, folder_paths.get_temp_directory()):
+        return os.path.realpath(path_value)
+    raise ValueError(f"Path is outside temp/output roots in {label}: {path_value}")
+
+
+def resolve_safe_output_target(filename_prefix: str) -> tuple[str, str]:
+    if os.path.isabs(filename_prefix):
+        raise ValueError(f"Absolute paths are not allowed for filename_prefix: {filename_prefix}")
+
+    _ensure_no_traversal(filename_prefix, "filename_prefix")
+
+    base_output_dir = os.path.realpath(folder_paths.get_output_directory())
+    target_dir_rel = os.path.normpath(os.path.dirname(filename_prefix))
+    output_dir = os.path.realpath(os.path.join(base_output_dir, target_dir_rel))
+
+    if not _is_within_root(output_dir, base_output_dir):
+        raise ValueError(f"Path traversal detected in filename_prefix: {filename_prefix}")
+
+    basename = os.path.basename(filename_prefix)
+    if basename in ("", ".", ".."):
+        raise ValueError(f"Invalid filename_prefix basename: {filename_prefix}")
+
+    return output_dir, basename
+
+
+def resolve_safe_model_metadata_path(path_category: str, metadata_value: str) -> Optional[str]:
+    if metadata_value.strip() == "":
+        return None
+
+    candidate = metadata_value.strip()
+    normalized = os.path.normpath(candidate)
+
+    allowed_roots = [os.path.realpath(p) for p in folder_paths.get_folder_paths(path_category)]
+
+    if os.path.isabs(normalized):
+        abs_candidate = os.path.realpath(normalized)
+        for root in allowed_roots:
+            if _is_within_root(abs_candidate, root) and os.path.isfile(abs_candidate):
+                return abs_candidate
+        return None
+
+    _ensure_no_traversal(normalized, path_category)
+
+    rel_candidate = normalized.replace("\\", "/")
+    full_path = folder_paths.get_full_path(path_category, rel_candidate)
+    if full_path is not None:
+        real_full_path = os.path.realpath(full_path)
+        if os.path.isfile(real_full_path) and any(_is_within_root(real_full_path, root) for root in allowed_roots):
+            return real_full_path
+
+    basename = os.path.basename(rel_candidate)
+    for entry in folder_paths.get_filename_list(path_category):
+        if os.path.basename(entry) == basename:
+            entry_path = folder_paths.get_full_path(path_category, entry)
+            if entry_path is not None:
+                real_entry_path = os.path.realpath(entry_path)
+                if os.path.isfile(real_entry_path) and any(_is_within_root(real_entry_path, root) for root in allowed_roots):
+                    return real_entry_path
+
+    return None
+
+
+def ensure_bundle_read_path(merged_path: str) -> str:
+    real_path = os.path.realpath(merged_path)
+    allowed_roots = [os.path.realpath(folder_paths.get_output_directory())]
+    if "tensorrt" in folder_paths.folder_names_and_paths:
+        allowed_roots.extend(os.path.realpath(p) for p in folder_paths.get_folder_paths("tensorrt"))
+
+    for root in allowed_roots:
+        if _is_within_root(real_path, root):
+            return real_path
+
+    raise ValueError(f"Path is outside allowed bundle roots: {merged_path}")
+
 class ModelBundle:
     def __init__(self, merged_path: str):
-        self.merged_path = merged_path
-        self._file = open(merged_path, "r+b")
+        self.merged_path = ensure_bundle_read_path(merged_path)
+        self._file = open(self.merged_path, "r+b")
         self._mm: Optional[mmap.mmap] = None
         self._entry_views: dict[BundleEntryType, memoryview] = {}
         self._reload_views()
@@ -193,6 +305,7 @@ class ModelBundle:
 
     @staticmethod
     def _serialize_onnx_model(onnx_path: str):
+        onnx_path = ensure_temp_or_output_path(onnx_path, "onnx_path")
         os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
         onnx_data_file = os.path.join(os.path.dirname(onnx_path), os.path.splitext(os.path.basename(onnx_path))[0] + ".onnx.data")
         if os.path.exists(onnx_data_file):
@@ -210,6 +323,8 @@ class ModelBundle:
 
     @classmethod
     def from_onnx(cls, onnx_path: str, output_path: str, replace_source: bool = True):
+        onnx_path = ensure_temp_or_output_path(onnx_path, "onnx_path")
+        output_path = ensure_output_path(output_path, "output_path")
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         cls._serialize_onnx_model(onnx_path)
         if replace_source:
@@ -233,6 +348,8 @@ class ModelBundle:
     
     @classmethod
     def from_trt_engine(cls, trt_engine_path: str, output_path: str, replace_source: bool = True):
+        trt_engine_path = ensure_temp_or_output_path(trt_engine_path, "trt_engine_path")
+        output_path = ensure_output_path(output_path, "output_path")
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         trt_byte_length = os.path.getsize(trt_engine_path).to_bytes(8, "little")
         if replace_source:
@@ -255,6 +372,9 @@ class ModelBundle:
 
     @classmethod
     def from_onnx_and_trt_engine(cls, onnx_path: str, trt_engine_path: str, output_path: str, replace_source: bool = True) -> "ModelBundle":
+        onnx_path = ensure_temp_or_output_path(onnx_path, "onnx_path")
+        trt_engine_path = ensure_temp_or_output_path(trt_engine_path, "trt_engine_path")
+        output_path = ensure_output_path(output_path, "output_path")
         cls._serialize_onnx_model(onnx_path)
         len_onnx_bytes = os.path.getsize(onnx_path)
         len_trt_bytes = os.path.getsize(trt_engine_path)
