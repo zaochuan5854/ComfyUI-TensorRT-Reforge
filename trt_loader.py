@@ -25,18 +25,29 @@ from comfy_api.latest import io
 import folder_paths
 
 from .trt_exporter import SupportedModelType
-from .trt_utils import ModelBundle, BundleEntryType, WeightsNameMap, trt_datatype_to_torch, torch_dtype_to_trt
+from .trt_utils import ModelBundle, BundleEntryType, WeightsNameMap, trt_datatype_to_torch, torch_dtype_to_trt, resolve_safe_model_metadata_path
 
 SupportedModelName = [e.name for e in SupportedModelType]
 
-if "tensorrt" in folder_paths.folder_names_and_paths:
-    folder_paths.folder_names_and_paths["tensorrt"][0].append(
-        os.path.join(folder_paths.models_dir, "tensorrt"))
-    folder_paths.folder_names_and_paths["tensorrt"][1].add(".engine")
-    folder_paths.folder_names_and_paths["tensorrt"][1].add(".bundle")
-else:
-    folder_paths.folder_names_and_paths["tensorrt"] = (
-        [os.path.join(folder_paths.models_dir, "tensorrt")], {".engine", ".bundle"})
+
+def _ensure_tensorrt_search_paths() -> None:
+    models_trt_dir = os.path.join(folder_paths.models_dir, "tensorrt")
+    output_trt_dir = os.path.join(folder_paths.get_output_directory(), "tensorrt")
+
+    if "tensorrt" in folder_paths.folder_names_and_paths:
+        search_paths, suffixes = folder_paths.folder_names_and_paths["tensorrt"]
+        for candidate in (models_trt_dir, output_trt_dir):
+            if candidate not in search_paths:
+                search_paths.append(candidate)
+        suffixes.add(".engine")
+        suffixes.add(".bundle")
+    else:
+        folder_paths.folder_names_and_paths["tensorrt"] = (
+            [models_trt_dir, output_trt_dir], {".engine", ".bundle"}
+        )
+
+
+_ensure_tensorrt_search_paths()
 
 if "original_weight_name" not in folder_paths.folder_names_and_paths:
     folder_paths.folder_names_and_paths["original_weight_name"] = (
@@ -472,6 +483,7 @@ class TRTLoader(io.ComfyNode):
 
     @classmethod
     def define_schema(cls) -> io.Schema:
+        model_options = folder_paths.get_filename_list("tensorrt")
         return io.Schema(
             node_id="TensorRTLoaderNode",
             display_name="TensorRT Loader Reforge",
@@ -480,8 +492,8 @@ class TRTLoader(io.ComfyNode):
                 io.Combo.Input(
                     id="model_path",
                     display_name="Model Path",
-                    options=folder_paths.get_filename_list("tensorrt"),
-                    default=folder_paths.folder_names_and_paths["tensorrt"][0][0] if folder_paths.get_filename_list("tensorrt") else ""
+                    options=model_options,
+                    default=model_options[0] if model_options else ""
                 ),
                 io.Combo.Input(
                     id="model_type",
@@ -591,18 +603,12 @@ class TRTModelPatcher(comfy.model_patcher.ModelPatcher):
     def _resolve_original_weight(self, bundle_metadata: Optional[dict[str, Any]]) -> Optional[str]:
         if bundle_metadata is None:
             return None
-        path_key = "source_model"
-        original_path = bundle_metadata.get(path_key)
-        if original_path is not None and isinstance(original_path, str):
-            if os.path.isfile(original_path):
-                return original_path
-            else:
-                models = folder_paths.get_filename_list(path_key)
-                for model in models:
-                    if model in original_path:
-                        full_path = folder_paths.get_full_path(path_key, model)
-                        if full_path is not None and os.path.isfile(full_path):
-                            return full_path
+        metadata_key = "source_model"
+        original_path = bundle_metadata.get(metadata_key)
+        if isinstance(original_path, str):
+            resolved = resolve_safe_model_metadata_path("original_weight_name", original_path)
+            if resolved is not None:
+                return resolved
         return None
 
     @no_type_check

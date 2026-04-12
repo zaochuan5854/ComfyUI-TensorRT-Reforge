@@ -19,7 +19,7 @@ from comfy.ldm.anima.model import LLMAdapter
 from comfy import model_base, model_management, sd
 import folder_paths
 
-from .trt_utils import ModelBundle
+from .trt_utils import ModelBundle, resolve_safe_output_target
 
 class ModelMetaInfo(NamedTuple):
     model_type: type
@@ -265,7 +265,8 @@ class TRTExporter(io.ComfyNode):
             weights_name_mapping, weights_shape_mapping = get_weights_mapping(diffusion_model.state_dict(), output_onnx)
             output_mapping = os.path.normpath(os.path.join(os.path.dirname(output_onnx), "weights_mapping.json"))
             os.makedirs(os.path.dirname(output_mapping), exist_ok=True)
-            json.dump({"weights_name_mapping": weights_name_mapping, "weights_shape_mapping": weights_shape_mapping}, open(output_mapping, "w"), indent=4)
+            with open(output_mapping, "w", encoding="utf-8") as mapping_file:
+                json.dump({"weights_name_mapping": weights_name_mapping, "weights_shape_mapping": weights_shape_mapping}, mapping_file, indent=4)
         else:
             output_mapping = None
 
@@ -273,10 +274,9 @@ class TRTExporter(io.ComfyNode):
         model_management.soft_empty_cache()
 
         print("[TensorRT] Building TensorRT Engine ...")
-        
-        output_dir = folder_paths.get_output_directory()
-        output_dir = os.path.join(output_dir, os.path.dirname(kwargs["filename_prefix"]))
-        basename = os.path.basename(kwargs["filename_prefix"]) + trt_spec_to_string(kwargs) + f".{model_type.name}"
+
+        output_dir, basename_prefix = resolve_safe_output_target(kwargs["filename_prefix"])
+        basename = basename_prefix + trt_spec_to_string(kwargs) + f".{model_type.name}"
         trt_output_path = os.path.join(output_dir, f"{basename}.engine")
 
         build_tensorrt_engine(
@@ -313,7 +313,8 @@ class TRTExporter(io.ComfyNode):
             )
 
         if enable_lora and output_mapping:
-            json_mapping = json.load(open(output_mapping))
+            with open(output_mapping, encoding="utf-8") as mapping_file:
+                json_mapping = json.load(mapping_file)
             bundle.save_weights_mapping(json_mapping["weights_name_mapping"], json_mapping["weights_shape_mapping"])
             bundle.metadata = {"source_model": checkpoint_path if has_checkpoint else diffusion_path}
         
@@ -542,7 +543,8 @@ def build_tensorrt_engine(
         config.set_flag(trt.BuilderFlag.REFIT)
     profile = builder.create_optimization_profile()
     
-    timing_cache_path = os.path.normpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "timing_cache.trt"))
+    temp_dir = folder_paths.get_temp_directory()
+    timing_cache_path = os.path.normpath(os.path.join(temp_dir, "timing_cache", "timing_cache.trt"))
     buffer = b""
     if os.path.exists(timing_cache_path):
         with open(timing_cache_path, mode="rb") as timing_cache_file:
