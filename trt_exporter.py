@@ -13,6 +13,7 @@ from torch import nn
 import tensorrt as trt
 import onnx
 
+import comfy.cli_args
 from comfy_api.latest import io
 from comfy.ldm.anima.model import LLMAdapter
 from comfy import model_base, model_management, sd
@@ -148,6 +149,8 @@ class TRTExporter(io.ComfyNode):
     @classmethod
     @override
     def execute(cls, **kwargs: Unpack[TRTSpec]) -> io.NodeOutput:
+        validate_export_env()
+
         model_name = kwargs["model_name"]
 
         checkpoint_path = folder_paths.get_full_path("checkpoints", model_name)
@@ -315,7 +318,20 @@ class TRTExporter(io.ComfyNode):
             bundle.metadata = {"source_model": checkpoint_path if has_checkpoint else diffusion_path}
         
         return io.NodeOutput()
+
+def validate_export_env():
+    if hasattr(comfy.cli_args, 'enables_dynamic_vram') and comfy.cli_args.enables_dynamic_vram():
+        red_start = "\033[91m"
+        reset = "\033[0m"
         
+        error_msg = (
+            "\n[Compatibility Error] ONNX Export cannot run while Dynamic VRAM is enabled.\n"
+            "The memory management conflicts with the PyTorch FX graph decomposition.\n"
+            f"{red_start}Please restart ComfyUI with the '--disable-dynamic-vram' command line argument to proceed.\n"
+            f"起動引数 '--disable-dynamic-vram' を付けてComfyUIを再起動してください{reset}"
+        )
+        raise RuntimeError(error_msg)
+    
 def get_context_features(model_type: SupportedModelType, unet_config: Optional[dict[str, Any]] = None) -> tuple[int, int, int, torch.dtype]:
     match model_type:
         case SupportedModelType.SD3:
