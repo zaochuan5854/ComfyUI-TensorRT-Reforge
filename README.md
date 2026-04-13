@@ -1,6 +1,7 @@
 # ComfyUI-TensorRT-Reforge
-
 A modernized, robust, and highly extensible TensorRT engine exporter and loader for ComfyUI.
+
+[日本語はこちら](https://qiita.com/zaochuan5854/items/f7b625bb9df5f4742b61)
 
 ## 💖 Acknowledgements & Origins
 This project is a direct evolution of the original [ComfyUI_TensorRT](https://github.com/comfyanonymous/ComfyUI_TensorRT). We want to express our deepest gratitude to the original authors and contributors. Their groundbreaking work laid the foundation for running lightning-fast TensorRT models within ComfyUI. 
