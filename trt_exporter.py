@@ -230,7 +230,7 @@ class TRTExporter(io.ComfyNode):
             use_rope3d, num_video_frames, y_dim, dtype,
         )
 
-        tracing_model = build_onnx_tracing_model(is_svd, diffuser, input_names, transformer_options, num_video_frames)
+        tracing_model = build_onnx_tracing_model(is_svd, diffuser, transformer_options, num_video_frames)
 
         temp_dir = folder_paths.get_temp_directory()
         output_onnx = os.path.normpath(os.path.join(temp_dir, f"trt_{time.time()}", "model.onnx"))
@@ -408,12 +408,26 @@ def build_onnx_tracing_input(
     min_width: int, opt_width: int, max_width: int,
     context_len_min: int, context_len: int, context_dim: int,
     use_rope3d: bool, num_video_frames: int, y_dim: int, dtype: torch.dtype,
-) -> tuple[tuple[torch.Tensor, ...], tuple[tuple[int, ...], ...], tuple[tuple[int, ...], ...], tuple[tuple[int, ...], ...], list[str], list[str], dict[str, dict[int, Any]]]:
-    batch_size_dim = torch.export.Dim("batch_size")
-    height_dim = torch.export.Dim("height")
-    width_dim = torch.export.Dim("width")
-    num_embeds_dim = torch.export.Dim("num_embeds")
-    num_video_frames_dim = torch.export.Dim("num_video_frames")
+) -> tuple[
+    tuple[torch.Tensor, ...],
+    tuple[tuple[int, ...], ...],
+    tuple[tuple[int, ...], ...],
+    tuple[tuple[int, ...], ...],
+    list[str],
+    list[str],
+    dict[str, dict[int, Any]],
+]:
+    if model_type == SupportedModelType.Anima:
+        num_prompts = 2
+        bs_min *= num_prompts
+        bs_opt *= num_prompts
+        bs_max *= num_prompts
+
+    batch_size_dim = torch.export.Dim("batch_size", min=bs_min, max=bs_max) if bs_min != bs_max else bs_opt
+    height_dim = torch.export.Dim("height", min=min_height // 8, max=max_height // 8) if min_height != max_height else opt_height // 8
+    width_dim = torch.export.Dim("width", min=min_width // 8, max=max_width // 8) if min_width != max_width else opt_width // 8
+    num_embeds_dim = torch.export.Dim("num_embeds", min=context_len_min, max=context_len) if context_len_min != context_len else context_len
+    num_video_frames_dim = num_video_frames if use_rope3d else None
 
     input_names = ["latent", "timestep", "context"]
     output_names = ["output"]
@@ -474,7 +488,7 @@ def build_onnx_tracing_input(
     
     return inputs, inputs_shapes_min, inputs_shapes_opt, inputs_shapes_max, input_names, output_names, dynamic_shapes
 
-def build_onnx_tracing_model(is_svd: bool, diffuser: nn.Module, input_names: list[str], transformer_options: dict[str, Any], num_video_frames: Optional[int]) -> nn.Module:
+def build_onnx_tracing_model(is_svd: bool, diffuser: nn.Module, transformer_options: dict[str, Any], num_video_frames: Optional[int]) -> nn.Module:
     
     if is_svd:
         if num_video_frames is None:
@@ -514,7 +528,7 @@ def build_onnx_tracing_model(is_svd: bool, diffuser: nn.Module, input_names: lis
         return TracingModel(diffuser, transformer_options).eval()
 
 def build_tensorrt_engine(
-    output_onnx: str,
+    target_onnx: str,
     input_names: list[str],
     inputs_shapes_min: tuple[tuple[int, ...], ...],
     inputs_shapes_opt: tuple[tuple[int, ...], ...],
@@ -531,7 +545,7 @@ def build_tensorrt_engine(
 
     network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED))
     parser = trt.OnnxParser(network, logger)
-    success = parser.parse_from_file(output_onnx)
+    success = parser.parse_from_file(target_onnx)
     for idx in range(parser.num_errors):
         print(parser.get_error(idx)) # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
 
@@ -609,26 +623,24 @@ def export_anima_llmadapter_to_onnx(llm_adapter: LLMAdapter, output_path: str, d
     device = cast(torch.device, model_management.get_torch_device())
     tracing_model = llm_adapter.to(device).to(dtype).eval()
 
-    batch = torch.export.Dim("batch")
-    source_seq_len = torch.export.Dim("source_seq_len")
-    target_seq_len = torch.export.Dim("target_seq_len")
+    input_names = ["source_hidden_states", "target_input_ids", "target_attention_mask", "source_attention_mask"]
+    output_names = ["output"]
+    batch_size = 1
+    source_seq_len = torch.export.Dim("source_seq_len", min=1, max=512) # Anima's LLMAdapter supports variable sequence length up to 512
+    target_seq_len = torch.export.Dim("target_seq_len", min=1, max=512) # Anima's LLMAdapter supports variable sequence length up to 512 for target (prompt) inputs
 
-    dynamic_shapes = (
-        {0: batch, 1: source_seq_len}, # source_hidden_states
-        {0: batch, 1: target_seq_len}, # target_input_ids
-        {0: batch, 1: target_seq_len}, # target_attention_mask
-        {0: batch, 1: source_seq_len}, # source_attention_mask
-    )
-
-    batch_s = 1 # batch
-    S = 512 # source_seq_len
-    T = 256 # target_seq_len
+    dynamic_shapes: dict[str, dict[int, torch.export.Dim | int]] = {
+        "source_hidden_states": {0: batch_size, 1: source_seq_len},
+        "target_input_ids": {0: batch_size, 1: target_seq_len},
+        "target_attention_mask": {0: batch_size, 1: target_seq_len},
+        "source_attention_mask": {0: batch_size, 1: source_seq_len},
+    }
 
     inputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] = (
-        torch.randn(batch_s, S, 1024, device=device, dtype=dtype), # source_hidden_states
-        torch.randint(0, 32128, (batch_s, T), device=device),      # target_input_ids (Long型)
-        torch.ones(batch_s, T, device=device, dtype=dtype),        # target_attention_mask
-        torch.ones(batch_s, S, device=device, dtype=dtype),        # source_attention_mask
+        torch.randn(batch_size, source_seq_len.max, 1024, device=device, dtype=dtype), # source_hidden_states
+        torch.randint(0, 32128, (batch_size, target_seq_len.max), device=device),      # target_input_ids (Long型)
+        torch.ones(batch_size, target_seq_len.max, device=device, dtype=dtype),        # target_attention_mask
+        torch.ones(batch_size, source_seq_len.max, device=device, dtype=dtype),    # source_attention_mask
     )
     # Anima LLMAdapter is supported in opset 25
     
@@ -636,8 +648,9 @@ def export_anima_llmadapter_to_onnx(llm_adapter: LLMAdapter, output_path: str, d
         tracing_model,
         inputs,
         output_path,
-        input_names=["source_hidden_states", "target_input_ids", "target_attention_mask", "source_attention_mask"],
-        output_names=["output"],
+        input_names=input_names,
+        output_names=output_names,
         opset_version=25,
         dynamic_shapes=dynamic_shapes,
+        dynamo=True,
     )
