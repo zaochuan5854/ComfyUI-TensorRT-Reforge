@@ -4,6 +4,8 @@ from comfy_api.latest import io
 from .trt_exporter import TRTExporter
 from .trt_loader import TRTLoader
 
+WEB_DIRECTORY = "./js"
+
 class ComfyUITensorRTReforge(ComfyExtension):
 
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
