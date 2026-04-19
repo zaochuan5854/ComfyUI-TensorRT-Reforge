@@ -417,11 +417,6 @@ def build_onnx_tracing_input(
     list[str],
     dict[str, dict[int, Any]],
 ]:
-    if model_type == SupportedModelType.Anima:
-        num_prompts = 2
-        bs_min *= num_prompts
-        bs_opt *= num_prompts
-        bs_max *= num_prompts
 
     batch_size_dim = torch.export.Dim("batch_size", min=bs_min, max=bs_max) if bs_min != bs_max else bs_opt
     height_dim = torch.export.Dim("height", min=min_height // 8, max=max_height // 8) if min_height != max_height else opt_height // 8
