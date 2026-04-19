@@ -672,7 +672,7 @@ class TRTModelPatcher(comfy.model_patcher.ModelPatcher):
         if isinstance(self.model, comfy.model_base.BaseModel) and isinstance(self.model.diffusion_model, TRTDiffuser):
             diffuser = self.model.diffusion_model
             current_uuid = getattr(self.model, "current_weight_patches_uuid", None)
-            needs_refit = force_patch_weights or (current_uuid != self.patches_uuid)
+            needs_refit = (force_patch_weights or (current_uuid != self.patches_uuid)) and (hasattr(self, "patches") and len(cast(dict[str, list[PatchType]], getattr(self, "patches"))) > 0)
 
             if needs_refit:
                 diffuser.set_source_state_dict(self.ret_dummy_state_dict())
