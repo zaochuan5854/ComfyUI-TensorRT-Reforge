@@ -14,12 +14,16 @@ import tensorrt as trt
 import onnx
 
 import comfy.cli_args
+import comfy.model_patcher
 from comfy_api.latest import io
 from comfy.ldm.anima.model import LLMAdapter
 from comfy import model_base, model_management, sd
 import folder_paths
 
-from .trt_utils import ModelBundle, resolve_safe_output_target
+from .trt_utils import ModelBundle, ensure_temp_or_output_path
+
+WeightsNameMap = dict[str, str]
+WeightsShapeMap = dict[str, tuple[tuple[int, ...], bool]]
 
 class ModelMetaInfo(NamedTuple):
     model_type: type
@@ -72,37 +76,7 @@ class TRTSpec(TypedDict):
     
     num_video_frames: int
 
-def trt_spec_to_string(spec: TRTSpec) -> str:
-    is_static = spec["min_batch_size"]  == spec["max_batch_size"]  == 0 and \
-                spec["min_width"] == spec["max_width"] == 0 and \
-                spec["min_height"] == spec["max_height"] == 0 and \
-                spec["min_context_mult"] == spec["max_context_mult"] == 0
-    if is_static:
-        s = f"W{spec['opt_width']}_H{spec['opt_height']}_BS{spec['opt_batch_size']}_CM{spec['opt_context_mult']}"
-    else:
-        s = f"W{spec['min_width']}-{spec['opt_width']}-{spec['max_width']}_H{spec['min_height']}-{spec['opt_height']}-{spec['max_height']}_BS{spec['min_batch_size']}-{spec['opt_batch_size']}-{spec['max_batch_size']}_CM{spec['min_context_mult']}-{spec['opt_context_mult']}-{spec['max_context_mult']}"
 
-    if spec["num_video_frames"] > 1:
-        s += f"_VF{spec['num_video_frames']}"
-
-    if spec["enable_lora"]:
-        s += "_LoRA"
-
-    return s
-
-def get_model_name_options() -> list[str]:
-    checkpoint_names = folder_paths.get_filename_list("checkpoints")
-    diffusion_names = folder_paths.get_filename_list("diffusion_models")
-    seen: set[str] = set()
-    options: list[str] = []
-    model_suffixes = [".safetensors", ".ckpt"]
-    for name in checkpoint_names + diffusion_names:
-        if not any(name.endswith(suffix) for suffix in model_suffixes):
-            continue
-        if name not in seen:
-            options.append(name)
-            seen.add(name)
-    return options
 class TRTExporter(io.ComfyNode):
     """
     Exports a TensorRT engine file and its associated ONNX file (if required) from a given model patcher and specifications.
@@ -110,7 +84,7 @@ class TRTExporter(io.ComfyNode):
 
     @classmethod
     def define_schema(cls) -> io.Schema:
-        model_name_options = get_model_name_options()
+        model_name_options = _get_model_name_options()
         return io.Schema(
             node_id="TensorRTExporterNode",
             display_name="TensorRT Exporter Reforge",
@@ -149,56 +123,19 @@ class TRTExporter(io.ComfyNode):
     @classmethod
     @override
     def execute(cls, **kwargs: Unpack[TRTSpec]) -> io.NodeOutput:
-        validate_export_env()
+        _validate_export_env()
 
         model_name = kwargs["model_name"]
 
-        checkpoint_path = folder_paths.get_full_path("checkpoints", model_name)
-        diffusion_path = folder_paths.get_full_path("diffusion_models", model_name)
+        model_source, model_patcher = _load_model_from_basename(model_name)
 
-        has_checkpoint = checkpoint_path is not None
-        has_diffusion = diffusion_path is not None
-        if has_checkpoint and has_diffusion:
-            raise ValueError(
-                f"Model name exists in both checkpoints and diffusion_models: {model_name}. "
-                "Please rename one of them."
-            )
-        if has_checkpoint:
-            model_patcher, *_ = sd.load_checkpoint_guess_config( # pyright: ignore[reportUnknownMemberType]
-                checkpoint_path,
-                output_vae=False,
-                output_clip=False,
-                output_clipvision=False,
-                embedding_directory=folder_paths.get_folder_paths("embeddings")
-            )
-            if model_patcher is None:
-                raise ValueError(f"Failed to load model patcher from checkpoint: {checkpoint_path}")
-        elif has_diffusion:
-            model_patcher = sd.load_diffusion_model(diffusion_path) # pyright: ignore[reportUnknownMemberType]
-        else:
-            raise FileNotFoundError(f"Model not found in checkpoints or diffusion_models: {model_name}")
+        spec = _adjust_spec_range(kwargs)
+        del kwargs
 
-        min_batch_size, opt_batch_size, max_batch_size = kwargs["min_batch_size"], kwargs["opt_batch_size"], kwargs["max_batch_size"]
-        min_height, opt_height, max_height = kwargs["min_height"], kwargs["opt_height"], kwargs["max_height"]
-        min_width, opt_width, max_width = kwargs["min_width"], kwargs["opt_width"], kwargs["max_width"]
-        min_context_mult, opt_context_mult, max_context_mult = kwargs["min_context_mult"], kwargs["opt_context_mult"], kwargs["max_context_mult"]
-
-        def _adjust_range(min_val: int, max_val: int, opt_val: int) -> tuple[int, int]:
-            new_min = opt_val if min_val == 0 else min(min_val, opt_val)
-            new_max = opt_val if max_val == 0 else max(max_val, opt_val)
-            return new_min, new_max
-
-        min_batch_size, max_batch_size = _adjust_range(min_batch_size, max_batch_size, opt_batch_size)
-        min_height, max_height = _adjust_range(min_height, max_height, opt_height)
-        min_width, max_width = _adjust_range(min_width, max_width, opt_width)
-        min_context_mult, max_context_mult = _adjust_range(min_context_mult, max_context_mult, opt_context_mult)
-
-        kwargs["min_batch_size"], kwargs["max_batch_size"] = min_batch_size, max_batch_size
-        kwargs["min_height"], kwargs["max_height"] = min_height, max_height
-        kwargs["min_width"], kwargs["max_width"] = min_width, max_width
-        kwargs["min_context_mult"], kwargs["max_context_mult"] = min_context_mult, max_context_mult
-
-        num_video_frames = kwargs["num_video_frames"]
+        min_batch_size, opt_batch_size, max_batch_size = spec["min_batch_size"], spec["opt_batch_size"], spec["max_batch_size"]
+        min_height, opt_height, max_height = spec["min_height"], spec["opt_height"], spec["max_height"]
+        min_width, opt_width, max_width = spec["min_width"], spec["opt_width"], spec["max_width"]
+        min_context_mult, opt_context_mult, max_context_mult = spec["min_context_mult"], spec["opt_context_mult"], spec["max_context_mult"]
 
         model_management.unload_all_models()
         model_management.load_models_gpu([model_patcher], force_full_load=True) # pyright: ignore[reportUnknownMemberType]
@@ -213,32 +150,35 @@ class TRTExporter(io.ComfyNode):
         
         model_type = SupportedModelType.from_instance(diffusion_model)
 
-        context_dim, context_len, context_len_min, dtype = get_context_features(model_type, unet_config)
+        context_len_min, context_len, context_dim, dtype = _get_context_features(model_type, unet_config)
 
+        use_rope3d = unet_config.get("pos_emb_cls", "None") == "rope3d" if unet_config is not None else False
+        num_video_frames = spec["num_video_frames"]
         if model_type == SupportedModelType.SVD:
             min_batch_size *= num_video_frames
             max_batch_size *= num_video_frames
 
-        is_svd = unet_config.get("use_temporal_resblock", False) == True if unet_config is not None else False
         y_dim = cast(int, diffusion_model.adm_channels) # pyright: ignore[reportUnknownMemberType]
-        use_rope3d = unet_config.get("pos_emb_cls", "None") == "rope3d" if unet_config is not None else False
 
-        transformer_options = cast(dict[str, Any], model_patcher.model_options['transformer_options'].copy()) # pyright: ignore[reportUnknownMemberType]
 
-        inputs, inputs_shapes_min, inputs_shapes_opt, inputs_shapes_max, input_names, output_names, dynamic_shapes = build_onnx_tracing_input(
+        inputs, inputs_shapes_min, inputs_shapes_opt, inputs_shapes_max, input_names, output_names, dynamic_shapes = _build_onnx_tracing_input(
             unet_config, model_type,
             min_batch_size, opt_batch_size, max_batch_size,
             min_context_mult, opt_context_mult, max_context_mult,
             min_height, opt_height, max_height,
             min_width, opt_width, max_width,
-            context_len_min, context_len, context_dim,
-            use_rope3d, num_video_frames, y_dim, dtype,
+            context_len_min, context_len, context_dim, dtype,
+            use_rope3d, num_video_frames, y_dim,
         )
 
-        tracing_model = build_onnx_tracing_model(is_svd, diffuser, transformer_options, num_video_frames)
+        is_svd = unet_config.get("use_temporal_resblock", False) == True if unet_config is not None else False
+        transformer_options = cast(dict[str, Any], model_patcher.model_options['transformer_options'].copy()) # pyright: ignore[reportUnknownMemberType]
+
+        tracing_model = _build_onnx_tracing_model(is_svd, diffuser, transformer_options, num_video_frames)
 
         temp_dir = folder_paths.get_temp_directory()
         output_onnx = os.path.normpath(os.path.join(temp_dir, f"trt_{time.time()}", "model.onnx"))
+        output_onnx = ensure_temp_or_output_path(output_onnx)
         os.makedirs(os.path.dirname(output_onnx), exist_ok=True)
 
         print("[TensorRT] Exporting ONNX Model (Dynamo=True) ...")
@@ -250,7 +190,7 @@ class TRTExporter(io.ComfyNode):
             case _:
                 opset_version = 18
 
-        enable_lora = kwargs["enable_lora"]
+        enable_lora = spec["enable_lora"]
 
         torch.onnx.export( # pyright: ignore[reportUnknownMemberType]
             tracing_model.eval(),
@@ -267,8 +207,9 @@ class TRTExporter(io.ComfyNode):
 
         if enable_lora:
             print("[TensorRT] Analyzing model for LoRA ...")
-            weights_name_mapping, weights_shape_mapping = get_weights_mapping(diffusion_model.state_dict(), output_onnx)
-            output_mapping = os.path.normpath(os.path.join(os.path.dirname(output_onnx), "weights_mapping.json"))
+            weights_name_mapping, weights_shape_mapping = _get_weights_mapping(diffusion_model.state_dict(), output_onnx)
+            output_mapping = os.path.join(os.path.dirname(output_onnx), "weights_mapping.json")
+            output_mapping = ensure_temp_or_output_path(output_mapping)
             os.makedirs(os.path.dirname(output_mapping), exist_ok=True)
             with open(output_mapping, "w", encoding="utf-8") as mapping_file:
                 json.dump({"weights_name_mapping": weights_name_mapping, "weights_shape_mapping": weights_shape_mapping}, mapping_file, indent=4)
@@ -280,12 +221,14 @@ class TRTExporter(io.ComfyNode):
 
         print("[TensorRT] Building TensorRT Engine ...")
 
-        output_dir, basename_prefix = resolve_safe_output_target(kwargs["filename_prefix"])
-        basename = basename_prefix + trt_spec_to_string(kwargs) + f".{model_type.name}"
+        output_dir = os.path.join(folder_paths.get_output_directory(), os.path.dirname(spec["filename_prefix"]))
+        basename_prefix = os.path.basename(spec["filename_prefix"])
+        basename = basename_prefix + _trt_spec_to_string(spec) + f".{model_type.name}"
         trt_output_path = os.path.join(output_dir, f"{basename}.engine")
+        os.makedirs(os.path.dirname(trt_output_path), exist_ok=True)
 
-        build_tensorrt_engine(
-            output_onnx, input_names, inputs_shapes_min, inputs_shapes_opt, inputs_shapes_max, trt_output_path, enable_lora=kwargs["enable_lora"]
+        _build_tensorrt_engine(
+            output_onnx, input_names, inputs_shapes_min, inputs_shapes_opt, inputs_shapes_max, trt_output_path, enable_lora=spec["enable_lora"]
         )
 
         print(f"[TensorRT] Conversion completed. Saved to {trt_output_path}")
@@ -301,8 +244,7 @@ class TRTExporter(io.ComfyNode):
             print("[TensorRT] Exporting LLMAdapter to ONNX ...")
             llm_adapter = cast(LLMAdapter, diffuser.llm_adapter)
             output_onnx_llm_adapter = os.path.normpath(os.path.join(temp_dir, f"trt_{time.time()}", "llm_adapter.onnx"))
-            os.makedirs(os.path.dirname(output_onnx_llm_adapter), exist_ok=True)
-            export_anima_llmadapter_to_onnx(llm_adapter, output_onnx_llm_adapter, dtype)
+            _export_anima_llmadapter_to_onnx(llm_adapter, output_onnx_llm_adapter, dtype)
             print(f"[TensorRT] LLMAdapter ONNX export completed. Saved to {output_onnx_llm_adapter}")
             bundle = ModelBundle.from_onnx_and_trt_engine(
                 onnx_path=output_onnx_llm_adapter,
@@ -321,11 +263,26 @@ class TRTExporter(io.ComfyNode):
             with open(output_mapping, encoding="utf-8") as mapping_file:
                 json_mapping = json.load(mapping_file)
             bundle.save_weights_mapping(json_mapping["weights_name_mapping"], json_mapping["weights_shape_mapping"])
-            bundle.metadata = {"source_model": checkpoint_path if has_checkpoint else diffusion_path}
+            bundle.metadata = {"source_model": model_source}
         
         return io.NodeOutput()
 
-def validate_export_env():
+
+def _get_model_name_options() -> list[str]:
+    checkpoint_names = folder_paths.get_filename_list("checkpoints")
+    diffusion_names = folder_paths.get_filename_list("diffusion_models")
+    seen: set[str] = set()
+    options: list[str] = []
+    model_suffixes = [".safetensors", ".ckpt"]
+    for name in checkpoint_names + diffusion_names:
+        if not any(name.endswith(suffix) for suffix in model_suffixes):
+            continue
+        if name not in seen:
+            options.append(name)
+            seen.add(name)
+    return options
+
+def _validate_export_env():
     if hasattr(comfy.cli_args, 'enables_dynamic_vram') and comfy.cli_args.enables_dynamic_vram():
         red_start = "\033[91m"
         reset = "\033[0m"
@@ -338,7 +295,63 @@ def validate_export_env():
         )
         raise RuntimeError(error_msg)
     
-def get_context_features(model_type: SupportedModelType, unet_config: Optional[dict[str, Any]] = None) -> tuple[int, int, int, torch.dtype]:
+def _load_model_from_basename(model_name: str) -> tuple[str, comfy.model_patcher.ModelPatcher]:
+    model_source = None
+    model_patcher = None
+    
+    checkpoint_path = folder_paths.get_full_path("checkpoints", model_name)
+    diffusion_path = folder_paths.get_full_path("diffusion_models", model_name)
+
+    has_checkpoint = checkpoint_path is not None
+    has_diffusion = diffusion_path is not None
+    
+    if has_checkpoint and has_diffusion:
+        raise ValueError(
+            f"Model name exists in both checkpoints and diffusion_models: {model_name}. "
+            "Please rename one of them."
+        )
+    if has_checkpoint:
+        model_source = checkpoint_path
+        model_patcher, *_ = sd.load_checkpoint_guess_config( # pyright: ignore[reportUnknownMemberType]
+            checkpoint_path,
+            output_vae=False,
+            output_clip=False,
+            output_clipvision=False,
+            embedding_directory=folder_paths.get_folder_paths("embeddings")
+        )
+        if model_patcher is None:
+            raise ValueError(f"Failed to load model patcher from checkpoint: {checkpoint_path}")
+    elif has_diffusion:
+        model_source = diffusion_path
+        model_patcher = sd.load_diffusion_model(diffusion_path) # pyright: ignore[reportUnknownMemberType]
+    else:
+        raise FileNotFoundError(f"Model not found in checkpoints or diffusion_models: {model_name}")
+    
+    return model_source, model_patcher
+
+def _adjust_spec_range(sepc: TRTSpec) -> TRTSpec:
+        min_batch_size, opt_batch_size, max_batch_size = sepc["min_batch_size"], sepc["opt_batch_size"], sepc["max_batch_size"]
+        min_height, opt_height, max_height = sepc["min_height"], sepc["opt_height"], sepc["max_height"]
+        min_width, opt_width, max_width = sepc["min_width"], sepc["opt_width"], sepc["max_width"]
+        min_context_mult, opt_context_mult, max_context_mult = sepc["min_context_mult"], sepc["opt_context_mult"], sepc["max_context_mult"]
+
+        def _adjust_range(min_val: int, max_val: int, opt_val: int) -> tuple[int, int]:
+            new_min = opt_val if min_val == 0 else min(min_val, opt_val)
+            new_max = opt_val if max_val == 0 else max(max_val, opt_val)
+            return new_min, new_max
+
+        min_batch_size, max_batch_size = _adjust_range(min_batch_size, max_batch_size, opt_batch_size)
+        min_height, max_height = _adjust_range(min_height, max_height, opt_height)
+        min_width, max_width = _adjust_range(min_width, max_width, opt_width)
+        min_context_mult, max_context_mult = _adjust_range(min_context_mult, max_context_mult, opt_context_mult)
+
+        sepc["min_batch_size"], sepc["max_batch_size"] = min_batch_size, max_batch_size
+        sepc["min_height"], sepc["max_height"] = min_height, max_height
+        sepc["min_width"], sepc["max_width"] = min_width, max_width
+        sepc["min_context_mult"], sepc["max_context_mult"] = min_context_mult, max_context_mult
+        return sepc
+
+def _get_context_features(model_type: SupportedModelType, unet_config: Optional[dict[str, Any]] = None) -> tuple[int, int, int, torch.dtype]:
     match model_type:
         case SupportedModelType.SD3:
             if unet_config:
@@ -403,16 +416,16 @@ def get_context_features(model_type: SupportedModelType, unet_config: Optional[d
         case _:
             assert_never(model_type)
 
-    return context_dim, context_len, context_len_min, dtype
+    return context_len_min, context_len, context_dim, dtype
 
-def build_onnx_tracing_input(
+def _build_onnx_tracing_input(
     unet_config: Optional[dict[str, Any]], model_type: SupportedModelType,
     bs_min: int, bs_opt: int, bs_max: int,
     ctx_min: int, ctx_opt: int, ctx_max: int,
     min_height: int, opt_height: int, max_height: int,
     min_width: int, opt_width: int, max_width: int,
-    context_len_min: int, context_len: int, context_dim: int,
-    use_rope3d: bool, num_video_frames: int, y_dim: int, dtype: torch.dtype,
+    context_len_min: int, context_len: int, context_dim: int, dtype: torch.dtype,
+    use_rope3d: bool, num_video_frames: int, y_dim: int
 ) -> tuple[
     tuple[torch.Tensor, ...],
     tuple[tuple[int, ...], ...],
@@ -488,7 +501,7 @@ def build_onnx_tracing_input(
     
     return inputs, inputs_shapes_min, inputs_shapes_opt, inputs_shapes_max, input_names, output_names, dynamic_shapes
 
-def build_onnx_tracing_model(is_svd: bool, diffuser: nn.Module, transformer_options: dict[str, Any], num_video_frames: Optional[int]) -> nn.Module:
+def _build_onnx_tracing_model(is_svd: bool, diffuser: nn.Module, transformer_options: dict[str, Any], num_video_frames: Optional[int]) -> nn.Module:
     
     if is_svd:
         if num_video_frames is None:
@@ -527,7 +540,7 @@ def build_onnx_tracing_model(is_svd: bool, diffuser: nn.Module, transformer_opti
 
         return TracingModel(diffuser, transformer_options).eval()
 
-def build_tensorrt_engine(
+def _build_tensorrt_engine(
     target_onnx: str,
     input_names: list[str],
     inputs_shapes_min: tuple[tuple[int, ...], ...],
@@ -558,11 +571,14 @@ def build_tensorrt_engine(
     profile = builder.create_optimization_profile()
     
     temp_dir = folder_paths.get_temp_directory()
-    timing_cache_path = os.path.normpath(os.path.join(temp_dir, "timing_cache", "timing_cache.trt"))
-    buffer = b""
+    timing_cache_path = os.path.join(temp_dir, "timing_cache", "timing_cache.trt")
+    timing_cache_path = ensure_temp_or_output_path(timing_cache_path)
+    os.makedirs(os.path.dirname(timing_cache_path), exist_ok=True)
     if os.path.exists(timing_cache_path):
         with open(timing_cache_path, mode="rb") as timing_cache_file:
             buffer = timing_cache_file.read()
+    else:
+        buffer = b""
     timing_cache = config.create_timing_cache(buffer)
     config.set_timing_cache(timing_cache, ignore_mismatch=True)
     
@@ -573,15 +589,17 @@ def build_tensorrt_engine(
 
     serialized_engine = builder.build_serialized_network(network, config)
     
+    output_path = ensure_temp_or_output_path(output_path)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "wb") as f:
         f.write(serialized_engine)
 
+    timing_cache_path = ensure_temp_or_output_path(timing_cache_path)
     os.makedirs(os.path.dirname(timing_cache_path), exist_ok=True)
     with open(timing_cache_path, "wb") as timing_cache_file:
         timing_cache_file.write(memoryview(config.get_timing_cache().serialize()))
 
-def get_weights_mapping(state_dict: dict[str, torch.Tensor], onnx_model_path: str) -> tuple[dict[str, str], dict[str, tuple[tuple[int, ...], bool]]]:
+def _get_weights_mapping(state_dict: dict[str, torch.Tensor], onnx_model_path: str) -> tuple[dict[str, str], dict[str, tuple[tuple[int, ...], bool]]]:
 
     print("Loading ONNX model to extract initializers...")
     model = onnx.load(onnx_model_path) # pyright: ignore[reportUnknownMemberType]
@@ -594,8 +612,8 @@ def get_weights_mapping(state_dict: dict[str, torch.Tensor], onnx_model_path: st
         initializer_hash = hash(initializer_data.data.tobytes())
         initializer_hash_mapping[initializer.name] = (initializer_hash, tuple(initializer_data.shape))
 
-    weights_name_mapping: dict[str, str] = {}
-    weights_shape_mapping: dict[str, tuple[tuple[int, ...], bool]] = {}
+    weights_name_mapping: WeightsNameMap = {}
+    weights_shape_mapping: WeightsShapeMap = {}
     initializers_mapped: set[str] = set()
 
     print("Computing hashes for PyTorch weights and finding matches...")
@@ -619,7 +637,40 @@ def get_weights_mapping(state_dict: dict[str, torch.Tensor], onnx_model_path: st
         
     return weights_name_mapping, weights_shape_mapping
 
-def export_anima_llmadapter_to_onnx(llm_adapter: LLMAdapter, output_path: str, dtype: torch.dtype):
+
+def _trt_spec_to_string(spec: TRTSpec) -> str:
+    s = ""
+    if spec["min_batch_size"] == spec["max_batch_size"]:
+        s += f"BS{spec['opt_batch_size']}_"
+    else:
+        s += f"BS{spec['min_batch_size']}-{spec['opt_batch_size']}-{spec['max_batch_size']}_"
+    
+    if spec["min_width"] == spec["max_width"]:
+        s += f"W{spec['opt_width']}_"
+    else:        s += f"W{spec['min_width']}-{spec['opt_width']}-{spec['max_width']}_"
+
+    if spec["min_height"] == spec["max_height"]:
+        s += f"H{spec['opt_height']}_"
+    else:
+        s += f"H{spec['min_height']}-{spec['opt_height']}-{spec['max_height']}_"
+    
+    if spec["min_context_mult"] == spec["max_context_mult"]:
+        s += f"CM{spec['opt_context_mult']}"
+    else:
+        s += f"CM{spec['min_context_mult']}-{spec['opt_context_mult']}-{spec['max_context_mult']}"
+
+    if spec["num_video_frames"] > 1:
+        s += f"_VF{spec['num_video_frames']}"
+
+    if spec["enable_lora"]:
+        s += "_LoRA"
+
+    return s
+
+def _export_anima_llmadapter_to_onnx(llm_adapter: LLMAdapter, output_path: str, dtype: torch.dtype):
+    output_path = ensure_temp_or_output_path(output_path)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
     device = cast(torch.device, model_management.get_torch_device())
     tracing_model = llm_adapter.to(device).to(dtype).eval()
 

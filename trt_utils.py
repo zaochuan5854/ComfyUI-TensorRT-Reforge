@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import onnx
 import enum
@@ -11,7 +13,10 @@ import onnxruntime as ort
 import folder_paths
 from onnx import helper, TensorProto
 from onnx.onnx_pb import ModelProto
-from typing import Literal, Any, overload, Optional, TypeVar
+from typing import TYPE_CHECKING, overload, Literal, Any, Optional, TypeVar
+
+if TYPE_CHECKING:
+    from .trt_exporter import WeightsNameMap, WeightsShapeMap
 
 T = TypeVar("T")
 
@@ -20,124 +25,10 @@ class BundleEntryType(enum.Enum):
     ONNX_MODEL = 2
     WEIGHTS_MAP = 3
 
-WeightsNameMap = dict[str, str]
-WeightsShapeMap = dict[str, tuple[tuple[int, ...], bool]]
-
-
-def _to_safe_compare_path(path_value: str) -> str:
-    return os.path.normcase(os.path.realpath(path_value))
-
-
-def _is_within_root(path_value: str, root: str) -> bool:
-    safe_path = _to_safe_compare_path(path_value)
-    safe_root = _to_safe_compare_path(root)
-    try:
-        return os.path.commonpath([safe_root, safe_path]) == safe_root
-    except ValueError:
-        # Different drives on Windows or invalid path combinations.
-        return False
-
-
-def _ensure_no_traversal(path_value: str, label: str) -> None:
-    normalized = os.path.normpath(path_value)
-    if os.path.isabs(normalized):
-        raise ValueError(f"Absolute paths are not allowed in {label}: {path_value}")
-    parts = normalized.replace("\\", "/").split("/")
-    if any(part == ".." for part in parts):
-        raise ValueError(f"Path traversal detected in {label}: {path_value}")
-
-
-def _ensure_path_within_root(path_value: str, root: str, label: str) -> str:
-    if not _is_within_root(path_value, root):
-        raise ValueError(f"Path escapes allowed root in {label}: {path_value}")
-    return os.path.realpath(path_value)
-
-
-def ensure_output_path(path_value: str, label: str) -> str:
-    return _ensure_path_within_root(path_value, folder_paths.get_output_directory(), label)
-
-
-def ensure_temp_or_output_path(path_value: str, label: str) -> str:
-    if _is_within_root(path_value, folder_paths.get_output_directory()):
-        return os.path.realpath(path_value)
-    if _is_within_root(path_value, folder_paths.get_temp_directory()):
-        return os.path.realpath(path_value)
-    raise ValueError(f"Path is outside temp/output roots in {label}: {path_value}")
-
-
-def resolve_safe_output_target(filename_prefix: str) -> tuple[str, str]:
-    if os.path.isabs(filename_prefix):
-        raise ValueError(f"Absolute paths are not allowed for filename_prefix: {filename_prefix}")
-
-    _ensure_no_traversal(filename_prefix, "filename_prefix")
-
-    base_output_dir = os.path.realpath(folder_paths.get_output_directory())
-    target_dir_rel = os.path.normpath(os.path.dirname(filename_prefix))
-    output_dir = os.path.realpath(os.path.join(base_output_dir, target_dir_rel))
-
-    if not _is_within_root(output_dir, base_output_dir):
-        raise ValueError(f"Path traversal detected in filename_prefix: {filename_prefix}")
-
-    basename = os.path.basename(filename_prefix)
-    if basename in ("", ".", ".."):
-        raise ValueError(f"Invalid filename_prefix basename: {filename_prefix}")
-
-    return output_dir, basename
-
-
-def resolve_safe_model_metadata_path(path_category: str, metadata_value: str) -> Optional[str]:
-    if metadata_value.strip() == "":
-        return None
-
-    candidate = metadata_value.strip()
-    normalized = os.path.normpath(candidate)
-
-    allowed_roots = [os.path.realpath(p) for p in folder_paths.get_folder_paths(path_category)]
-
-    if os.path.isabs(normalized):
-        abs_candidate = os.path.realpath(normalized)
-        for root in allowed_roots:
-            if _is_within_root(abs_candidate, root) and os.path.isfile(abs_candidate):
-                return abs_candidate
-        return None
-
-    _ensure_no_traversal(normalized, path_category)
-
-    rel_candidate = normalized.replace("\\", "/")
-    full_path = folder_paths.get_full_path(path_category, rel_candidate)
-    if full_path is not None:
-        real_full_path = os.path.realpath(full_path)
-        if os.path.isfile(real_full_path) and any(_is_within_root(real_full_path, root) for root in allowed_roots):
-            return real_full_path
-
-    basename = os.path.basename(rel_candidate)
-    for entry in folder_paths.get_filename_list(path_category):
-        if os.path.basename(entry) == basename:
-            entry_path = folder_paths.get_full_path(path_category, entry)
-            if entry_path is not None:
-                real_entry_path = os.path.realpath(entry_path)
-                if os.path.isfile(real_entry_path) and any(_is_within_root(real_entry_path, root) for root in allowed_roots):
-                    return real_entry_path
-
-    return None
-
-
-def ensure_bundle_read_path(merged_path: str) -> str:
-    real_path = os.path.realpath(merged_path)
-    allowed_roots = [os.path.realpath(folder_paths.get_output_directory())]
-    if "tensorrt" in folder_paths.folder_names_and_paths:
-        allowed_roots.extend(os.path.realpath(p) for p in folder_paths.get_folder_paths("tensorrt"))
-
-    for root in allowed_roots:
-        if _is_within_root(real_path, root):
-            return real_path
-
-    raise ValueError(f"Path is outside allowed bundle roots: {merged_path}")
-
 class ModelBundle:
-    def __init__(self, merged_path: str):
-        self.merged_path = ensure_bundle_read_path(merged_path)
-        self._file = open(self.merged_path, "r+b")
+    def __init__(self, bundle_path: str):
+        self.bundle_path = ensure_temp_or_output_path(bundle_path)
+        self._file = open(self.bundle_path, "r+b")
         self._mm: Optional[mmap.mmap] = None
         self._entry_views: dict[BundleEntryType, memoryview] = {}
         self._reload_views()
@@ -150,13 +41,13 @@ class ModelBundle:
         self._mv = memoryview(self._mm)
         file_size = len(self._mv)
         if file_size < 8:
-            raise ValueError(f"Invalid bundle file (too small): {self.merged_path}")
+            raise ValueError(f"Invalid bundle file (too small): {self.bundle_path}")
 
         cursor = file_size - 8
         meta_size = int.from_bytes(self._mv[cursor: cursor + 8], "little")
         cursor -= meta_size
         if cursor < 0:
-            raise ValueError(f"Invalid bundle metadata size in: {self.merged_path}")
+            raise ValueError(f"Invalid bundle metadata size in: {self.bundle_path}")
 
         self._meta_offset = cursor
         self._meta_view = self._mv[self._meta_offset: self._meta_offset + meta_size]
@@ -165,7 +56,7 @@ class ModelBundle:
         # Chunk layout is: [Data][Size:8B][Type:1B]
         while cursor > 0:
             if cursor < 9:
-                raise ValueError(f"Corrupted bundle chunk footer in: {self.merged_path}")
+                raise ValueError(f"Corrupted bundle chunk footer in: {self.bundle_path}")
 
             cursor -= 1
             entry_type = BundleEntryType(int.from_bytes(self._mv[cursor:cursor + 1], "little"))
@@ -175,7 +66,7 @@ class ModelBundle:
 
             cursor -= entry_size
             if cursor < 0:
-                raise ValueError(f"Corrupted bundle chunk size in: {self.merged_path}")
+                raise ValueError(f"Corrupted bundle chunk size in: {self.bundle_path}")
 
             if entry_type not in self._entry_views:
                 self._entry_views[entry_type] = self._mv[cursor: cursor + entry_size]
@@ -184,8 +75,8 @@ class ModelBundle:
         self.close_views()
         self._close_mmap()
 
-        if os.path.getsize(self.merged_path) == 0:
-            raise ValueError(f"Invalid bundle file (empty): {self.merged_path}")
+        if os.path.getsize(self.bundle_path) == 0:
+            raise ValueError(f"Invalid bundle file (empty): {self.bundle_path}")
 
         self._mm = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
         self._open_views()
@@ -305,7 +196,7 @@ class ModelBundle:
 
     @staticmethod
     def _serialize_onnx_model(onnx_path: str):
-        onnx_path = ensure_temp_or_output_path(onnx_path, "onnx_path")
+        onnx_path = ensure_temp_or_output_path(onnx_path)
         os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
         onnx_data_file = os.path.join(os.path.dirname(onnx_path), os.path.splitext(os.path.basename(onnx_path))[0] + ".onnx.data")
         if os.path.exists(onnx_data_file):
@@ -323,8 +214,8 @@ class ModelBundle:
 
     @classmethod
     def from_onnx(cls, onnx_path: str, output_path: str, replace_source: bool = True):
-        onnx_path = ensure_temp_or_output_path(onnx_path, "onnx_path")
-        output_path = ensure_output_path(output_path, "output_path")
+        onnx_path = ensure_temp_or_output_path(onnx_path)
+        output_path = ensure_temp_or_output_path(output_path)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         cls._serialize_onnx_model(onnx_path)
         if replace_source:
@@ -348,8 +239,8 @@ class ModelBundle:
     
     @classmethod
     def from_trt_engine(cls, trt_engine_path: str, output_path: str, replace_source: bool = True):
-        trt_engine_path = ensure_temp_or_output_path(trt_engine_path, "trt_engine_path")
-        output_path = ensure_output_path(output_path, "output_path")
+        trt_engine_path = ensure_temp_or_output_path(trt_engine_path)
+        output_path = ensure_temp_or_output_path(output_path)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         trt_byte_length = os.path.getsize(trt_engine_path).to_bytes(8, "little")
         if replace_source:
@@ -372,9 +263,10 @@ class ModelBundle:
 
     @classmethod
     def from_onnx_and_trt_engine(cls, onnx_path: str, trt_engine_path: str, output_path: str, replace_source: bool = True) -> "ModelBundle":
-        onnx_path = ensure_temp_or_output_path(onnx_path, "onnx_path")
-        trt_engine_path = ensure_temp_or_output_path(trt_engine_path, "trt_engine_path")
-        output_path = ensure_output_path(output_path, "output_path")
+        onnx_path = ensure_temp_or_output_path(onnx_path)
+        trt_engine_path = ensure_temp_or_output_path(trt_engine_path)
+        output_path = ensure_temp_or_output_path(output_path)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         cls._serialize_onnx_model(onnx_path)
         len_onnx_bytes = os.path.getsize(onnx_path)
         len_trt_bytes = os.path.getsize(trt_engine_path)
@@ -446,6 +338,62 @@ class ModelBundle:
     def __del__(self):
         self.close()
 
+# ## File Layout
+# Each data chunk's role is defined by its leading ID. The appearance order within the file is arbitrary.
+
+# +-----------------------------------------+ <--- Offset 0
+# | [ID:1B][Size:8B][Chunk Data...]         | Data Chunk A
+# +-----------------------------------------+
+# | [ID:1B][Size:8B][Chunk Data...]         | Data Chunk B
+# +-----------------------------------------+
+# | ...                                     | (Additional Chunks in any order)
+# +-----------------------------------------+ <--- End of Data Chunks (data_limit)
+# |                                         |
+# |      Metadata Section (JSON)            | Variable Length (No ID prefix)
+# |                                         |
+# +-----------------------------------------+ <--- Metadata End (EOF - 8 bytes)
+# |      Metadata Size (8 bytes)            | uint64, Little Endian
+# +-----------------------------------------+ <--- EOF
+
+# ---
+
+# ## ID Definition
+# - 0x01: TensorRT Engine Data
+# - 0x02: ONNX Model Data
+# - 0x03: WeightsMap (JSON / Binary)
+# - 0x04-0xFF: Reserved for future extensions
+
+# ---
+
+# ## Parsing Logic (ID-Driven)
+# 1. Read the last 8 bytes of the file to get `meta_size`.
+# 2. Calculate `data_limit` = (EOF - 8 - meta_size).
+# 3. Initialize `current_offset = 0`.
+# 4. While `current_offset < data_limit`:
+#     a. Read 1 byte as `chunk_id`.
+#     b. Read 8 bytes as `chunk_size`.
+#     c. Record `data_start = current_offset + 9`.
+#     d. Store the mapping of `chunk_id` -> `data_start`.
+#     e. Jump to the next chunk: `current_offset += (9 + chunk_size)`.
+# 5. Seek to `data_limit` and parse the Metadata JSON.
+
+def ensure_temp_or_output_path(path_value: str) -> str:
+
+    def _is_within_root(path_value: str, root: str) -> bool:
+        safe_path = os.path.normcase(os.path.realpath(path_value))
+        safe_root = os.path.normcase(os.path.realpath(root))
+        try:
+            return os.path.commonpath([safe_root, safe_path]) == safe_root
+        except ValueError:
+            # Different drives on Windows or invalid path combinations.
+            return False
+
+    if _is_within_root(path_value, folder_paths.get_output_directory()):
+        return os.path.realpath(path_value)
+    if _is_within_root(path_value, folder_paths.get_temp_directory()):
+        return os.path.realpath(path_value)
+    raise ValueError(f"Path is outside temp/output roots: {path_value}")
+
 def trt_datatype_to_torch(datatype: trt.DataType) -> torch.dtype:
     type_map = {
         trt.DataType.FLOAT: torch.float32,
@@ -494,32 +442,3 @@ def check_cuda_compatibility() -> bool:
     except Exception as e:
         print(f"[Warning] CUDA found but incompatible: {e}")
         return False
-
-# /**
-#  * OMNI Hybrid Sequential Format Spec (2026)
-#  * -----------------------------------------------------------------------------
-#  * [File Layout]
-#  * +-----------------------------------+ <--- Offset 0
-#  * | [ID:1][Size:8B][TRT Data...]       | Data Chunk 1
-#  * +-----------------------------------+
-#  * | [ID:2][Size:8B][ONNX Data...]      | Data Chunk 2
-#  * +-----------------------------------+
-#  * | [ID:3][Size:8B][WeightsMap JSON...]| Data Chunk 3 (Optional)
-#  * +-----------------------------------+ <--- End of Data Chunks
-#  * |                                   |
-#  * |      Metadata Section (JSON)      | Variable Length (No ID)
-#  * |                                   |
-#  * +-----------------------------------+ <--- Metadata End (EOF - 8 bytes)
-#  * |   Metadata Size (8 bytes)         | uint64, Little Endian
-#  * +-----------------------------------+ <--- EOF (End of File)
-#  * -----------------------------------------------------------------------------
-#  * [Parsing Logic]
-#  * 1. Read last 8 bytes to get `meta_size`.
-#  * 2. Metadata starts at: (EOF - 8 - meta_size).
-#  * 3. Chunks start at 0 and repeat until (EOF - 8 - meta_size).
-#  *
-#  * [Advantages]
-#  * - Metadata update: Truncate at `End of Data Chunks`, then write new JSON + size.
-#  * - No shifting: Huge model data (GBs) never moves.
-#  */
-    
