@@ -479,7 +479,7 @@ def build_onnx_tracing_input(
         inputs_shapes_max += ((bs_max,) + v,)
 
     device = cast(torch.device, model_management.get_torch_device())
-    inputs: tuple[torch.Tensor, ...] = tuple(torch.zeros(shape, device=device, dtype=dtype) for shape in inputs_shapes_opt)
+    inputs: tuple[torch.Tensor, ...] = tuple(torch.zeros(shape, device=device, dtype=dtype) for shape in inputs_shapes_max)
     
     return inputs, inputs_shapes_min, inputs_shapes_opt, inputs_shapes_max, input_names, output_names, dynamic_shapes
 
