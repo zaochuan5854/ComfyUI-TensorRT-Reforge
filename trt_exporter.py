@@ -193,6 +193,11 @@ class TRTExporter(io.ComfyNode):
         min_width, max_width = _adjust_range(min_width, max_width, opt_width)
         min_context_mult, max_context_mult = _adjust_range(min_context_mult, max_context_mult, opt_context_mult)
 
+        kwargs["min_batch_size"], kwargs["max_batch_size"] = min_batch_size, max_batch_size
+        kwargs["min_height"], kwargs["max_height"] = min_height, max_height
+        kwargs["min_width"], kwargs["max_width"] = min_width, max_width
+        kwargs["min_context_mult"], kwargs["max_context_mult"] = min_context_mult, max_context_mult
+
         num_video_frames = kwargs["num_video_frames"]
 
         model_management.unload_all_models()
