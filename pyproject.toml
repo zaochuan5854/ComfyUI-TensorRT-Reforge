@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-tensorrt-reforge"
 description = "High-speed TensorRT integration for ComfyUI with LoRA and Refit support, enabling fast inference without sacrificing model flexibility."
-version = "0.0.2"
+version = "0.1.0"
 license = { file = "LICENSE" }
 
 [project.urls]
