@@ -208,7 +208,8 @@ class TRTDiffuser:
             raise RuntimeError("Source state_dict is required for TensorRT refit but not found.")
 
     def _should_refit_layer(self, layer: str) -> bool:
-        return self.weight_mapping is not None and layer in self.weight_mapping
+        assert self.weight_mapping is not None, "Weight mapping is required for refitting but not found."
+        return layer in self.weight_mapping
 
     def _schedule_device(self, layers: list[str]) -> dict[str, Literal["cpu", "cuda"]]:
         assert self.shape_mapping is not None, "Shape mapping is required for refitting but not found."
