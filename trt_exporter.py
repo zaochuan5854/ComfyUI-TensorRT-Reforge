@@ -1,12 +1,11 @@
-from typing import Any, NamedTuple, Optional
-from typing_extensions import override, cast, assert_never, TypedDict, Unpack
+from typing import Any, Optional
+from typing_extensions import override, cast, assert_never, Unpack
 
 import os
 import time
 import json
 import tqdm
 import numpy as np
-from enum import Enum
 
 import torch
 from torch import nn
@@ -21,60 +20,7 @@ from comfy import model_base, model_management, sd
 import folder_paths
 
 from .trt_utils import ModelBundle, ensure_temp_or_output_path
-
-WeightsNameMap = dict[str, str]
-WeightsShapeMap = dict[str, tuple[tuple[int, ...], bool]]
-
-class ModelMetaInfo(NamedTuple):
-    model_type: type
-    config: dict[str, Any]
-
-class SupportedModelType(Enum):
-    SD15 = ModelMetaInfo(model_base.BaseModel, {}) #Opset18 OK
-    SDXL = ModelMetaInfo(model_base.SDXL, {"adm_in_channels": 2816}) #Opset18 OK
-    AuraFlow = ModelMetaInfo(model_base.AuraFlow, {})
-    Flux = ModelMetaInfo(model_base.Flux, {})
-    SD3 = ModelMetaInfo(model_base.SD3, {}) #Medium Opset18 OK
-    Anima = ModelMetaInfo(model_base.Anima, {}) #Opset25 OK
-    SVD = ModelMetaInfo(model_base.SVD_img2vid, {})
-
-    @classmethod
-    def from_instance(cls, instance: object) -> "SupportedModelType":
-        for model_type in cls:
-            if type(instance) is model_type.value.model_type:
-                return model_type
-        raise NotImplementedError("Unsupported model type: {}".format(type(instance)))
-    
-    @staticmethod
-    def semantic_list() -> list[str]:
-        l = [model_type.name for model_type in SupportedModelType]
-        l.reverse()
-        l.append(l.pop(l.index(SupportedModelType.SVD.name)))
-        return l
-
-class TRTSpec(TypedDict):
-    model_name: str
-    filename_prefix: str
-    enable_lora: bool
-
-    opt_batch_size: int
-    opt_width: int
-    opt_height: int
-    opt_context_mult: int
-
-    min_batch_size: int
-    max_batch_size: int
-    
-    min_width: int #Width First for comfyui
-    max_width: int #Width First for comfyui
-    
-    min_height: int
-    max_height: int
-    
-    min_context_mult: int
-    max_context_mult: int
-    
-    num_video_frames: int
+from .definitions import WeightsNameMap, WeightsShapeMap, SupportedModelType, TRTSpec, trt_logger
 
 
 class TRTExporter(io.ComfyNode):
@@ -552,12 +498,10 @@ def _build_tensorrt_engine(
     if trt is None:
         raise RuntimeError("TensorRT is not installed but required for compilation.")
 
-    logger = trt.Logger(trt.Logger.INFO)
-    builder = trt.Builder(logger)
-    trt.init_libnvinfer_plugins(logger, "") # pyright: ignore[reportArgumentType]
+    builder = trt.Builder(trt_logger)
 
     network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED))
-    parser = trt.OnnxParser(network, logger)
+    parser = trt.OnnxParser(network, trt_logger)
     success = parser.parse_from_file(target_onnx)
     for idx in range(parser.num_errors):
         print(parser.get_error(idx)) # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]

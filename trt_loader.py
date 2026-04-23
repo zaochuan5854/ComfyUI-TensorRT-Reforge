@@ -1,11 +1,10 @@
-from typing_extensions import override, TypedDict
+from typing_extensions import override
 from typing import Any, Optional, cast, Callable, no_type_check
 from types import MethodType
 
 import os
 
 import torch
-import tensorrt as trt
 
 import comfy.utils
 import comfy.model_base
@@ -16,32 +15,12 @@ import comfy.supported_models
 from comfy_api.latest import io
 import folder_paths
 
-from .trt_exporter import SupportedModelType, WeightsNameMap, WeightsShapeMap
+from .definitions import SupportedModelType, WeightsNameMap, WeightsShapeMap, PatchType
 from .trt_utils import ModelBundle, BundleEntryType
 from .trt_diffusers.base_diffuser import TRTDiffuser
 from .trt_diffusers.anima_diffuser import TRTAnimaDiffuser
 
 SupportedModelName = [e.name for e in SupportedModelType]
-
-
-# strength_patch, strength_model, (original_weight, lora_b, lora_a, alpha)
-PatchType = tuple[float, Any, float, Any, Any]
-
-logger = trt.Logger(trt.Logger.INFO)
-trt.init_libnvinfer_plugins(logger, "") # pyright: ignore[reportArgumentType]
-runtime = trt.Runtime(logger)
-
-class ModelInputNames(TypedDict):
-    latent: str
-    timestep: str
-    context: Optional[str]
-    vector_cond: Optional[str]
-
-class ModelInputMapping(TypedDict):
-    latent: list[str]
-    timestep: list[str]
-    context: list[str]
-    vector_cond: list[str]
 
 class TRTLoader(io.ComfyNode):
     """

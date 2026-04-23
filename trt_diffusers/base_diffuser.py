@@ -1,4 +1,3 @@
-from typing_extensions import TypedDict
 from typing import Any, Optional, cast, Literal
 
 import numpy as np
@@ -10,38 +9,19 @@ import tensorrt as trt
 import comfy.lora
 import comfy.model_management
 
-from ..trt_exporter import SupportedModelType, WeightsNameMap, WeightsShapeMap
+from ..definitions import SupportedModelType, WeightsNameMap, WeightsShapeMap, PatchType, ModelInputNames, ModelInputMapping, trt_logger, trt_runtime
 from ..trt_utils import trt_datatype_to_torch, torch_dtype_to_trt
 
 SupportedModelName = [e.name for e in SupportedModelType]
-
-# strength_patch, strength_model, (original_weight, lora_b, lora_a, alpha)
-PatchType = tuple[float, Any, float, Any, Any]
-
-class ModelInputNames(TypedDict):
-    latent: str
-    timestep: str
-    context: Optional[str]
-    vector_cond: Optional[str]
-
-class ModelInputMapping(TypedDict):
-    latent: list[str]
-    timestep: list[str]
-    context: list[str]
-    vector_cond: list[str]
-
-logger = trt.Logger(trt.Logger.INFO)
-trt.init_libnvinfer_plugins(logger, "") # pyright: ignore[reportArgumentType]
-runtime = trt.Runtime(logger)
 
 class TRTDiffuser:
     def __init__(self, engine_path: Optional[str] = None, engine: Optional[trt.ICudaEngine] = None, weight_map: Optional[WeightsNameMap] = None, shape_map: Optional[WeightsShapeMap] = None) -> None:        
         if engine is not None:
             self.engine = engine
         elif engine_path is not None:
-            self.engine_path = engine_path
+            engine_path = engine_path
             with open(engine_path, "rb") as f:
-                deserialized_engine = runtime.deserialize_cuda_engine(f.read())
+                deserialized_engine = trt_runtime.deserialize_cuda_engine(f.read())
                 self.engine = deserialized_engine
         else:
             raise ValueError("Either engine_path or engine must be provided.")
@@ -63,19 +43,16 @@ class TRTDiffuser:
             "context": ["context", "ctx"],
             "vector_cond": ["vector_cond", "y"]
         }
+        self.weight_mapping = weight_map
+        self.shape_mapping = shape_map
+
         self.model_output_names: list[str] = []
-        self.weight_mapping: Optional[WeightsNameMap] = None
-        self.shape_mapping: Optional[WeightsShapeMap] = None
         self.patches: dict[str, list[PatchType]] = {}
         self.source_state_dict: dict[str, torch.Tensor] = {}
         self._last_refit_layers: set[str] = set()
         self.refit_compute_device: torch.device = cast(torch.device, comfy.model_management.get_torch_device())
 
         self._rename_inputs()
-        if weight_map is not None:
-            self.weight_mapping = weight_map
-        if shape_map is not None:
-            self.shape_mapping = shape_map
 
     def _rename_inputs(self):
         engine_model_input_names: list[str] = []
@@ -161,7 +138,7 @@ class TRTDiffuser:
 
     def refit(self):
         self._validate_refit_support()
-        refitter = trt.Refitter(self.engine, logger)
+        refitter = trt.Refitter(self.engine, trt_logger)
         keep_weights: dict[str, torch.Tensor] = {}
 
         target_layers = list(self._last_refit_layers)

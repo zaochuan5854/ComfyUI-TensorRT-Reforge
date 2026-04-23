@@ -7,7 +7,7 @@ from onnx.onnx_pb import ModelProto, TensorProto
 from onnxruntime.capi.onnxruntime_inference_collection import Session
 
 from .base_diffuser import TRTDiffuser
-from ..trt_exporter import WeightsNameMap, WeightsShapeMap
+from ..definitions import WeightsNameMap, WeightsShapeMap
 
 class TRTAnimaDiffuser(TRTDiffuser):
     def __init__(self, onnx_model: ModelProto, device: torch.device, engine_path: Optional[str] = None, engine: Optional[trt.ICudaEngine] = None, weight_map: Optional[WeightsNameMap] = None, shape_map: Optional[WeightsShapeMap] = None) -> None:

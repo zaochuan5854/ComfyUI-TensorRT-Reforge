@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import os
 import onnx
 import enum
@@ -13,10 +11,9 @@ import onnxruntime as ort
 import folder_paths
 from onnx import helper, TensorProto
 from onnx.onnx_pb import ModelProto
-from typing import TYPE_CHECKING, overload, Literal, Any, Optional, TypeVar
+from typing import overload, Literal, Any, Optional, TypeVar
 
-if TYPE_CHECKING:
-    from .trt_exporter import WeightsNameMap, WeightsShapeMap
+from .definitions import WeightsNameMap, WeightsShapeMap, trt_runtime
 
 T = TypeVar("T")
 
@@ -97,9 +94,7 @@ class ModelBundle:
         raw_view = self._entry_views[entry]
         match entry:
             case BundleEntryType.TRT_ENGINE:
-                logger = trt.Logger(trt.Logger.INFO) # type: ignore
-                runtime = trt.Runtime(logger) # type: ignore
-                return runtime.deserialize_cuda_engine(raw_view) # type: ignore
+                return trt_runtime.deserialize_cuda_engine(raw_view) # type: ignore
             case BundleEntryType.ONNX_MODEL:
                 # Need to copy to bytes to avoid memoryview being released (which would cause the engine/model to become invalid)
                 return onnx.load_model_from_string(raw_view.tobytes()) # pyright: ignore[reportUnknownMemberType]
