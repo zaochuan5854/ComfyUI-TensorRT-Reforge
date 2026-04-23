@@ -15,7 +15,7 @@ import comfy.supported_models
 from comfy_api.latest import io
 import folder_paths
 
-from .definitions import SupportedModelType, WeightsNameMap, WeightsShapeMap, PatchType
+from .definitions import SupportedModelType, WeightsNameMap, WeightsShapeMap, PatchType, trt_runtime
 from .trt_utils import ModelBundle, BundleEntryType
 from .trt_diffusers.base_diffuser import TRTDiffuser
 from .trt_diffusers.anima_diffuser import TRTAnimaDiffuser
@@ -79,12 +79,14 @@ class TRTLoader(io.ComfyNode):
             metadata = model_bundle.metadata
             if model_type == SupportedModelType.Anima:
                 onnx_model, trt_engine = model_bundle[BundleEntryType.ONNX_MODEL], model_bundle[BundleEntryType.TRT_ENGINE]
-                diffuser = TRTAnimaDiffuser(onnx_model, device=cast(torch.device, comfy.model_management.get_torch_device()), engine=trt_engine, weight_map=weight_mapping, shape_map=shape_mapping)
+                diffuser = TRTAnimaDiffuser(engine=trt_engine, onnx_model=onnx_model, device=cast(torch.device, comfy.model_management.get_torch_device()), weight_map=weight_mapping, shape_map=shape_mapping)
             else:
                 trt_engine = model_bundle[BundleEntryType.TRT_ENGINE]
                 diffuser = TRTDiffuser(engine=trt_engine, weight_map=weight_mapping, shape_map=shape_mapping)
         else:
-            diffuser = TRTDiffuser(engine_path=full_path)
+            with open(full_path, "rb") as f:
+                deserialized_engine = trt_runtime.deserialize_cuda_engine(f.read())
+            diffuser = TRTDiffuser(engine=deserialized_engine)
 
         match model_type:
             case SupportedModelType.SD15:

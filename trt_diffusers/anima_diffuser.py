@@ -10,8 +10,8 @@ from .base_diffuser import TRTDiffuser
 from ..definitions import WeightsNameMap, WeightsShapeMap
 
 class TRTAnimaDiffuser(TRTDiffuser):
-    def __init__(self, onnx_model: ModelProto, device: torch.device, engine_path: Optional[str] = None, engine: Optional[trt.ICudaEngine] = None, weight_map: Optional[WeightsNameMap] = None, shape_map: Optional[WeightsShapeMap] = None) -> None:
-        super().__init__(engine_path=engine_path, engine=engine, weight_map=weight_map, shape_map=shape_map)
+    def __init__(self, engine: trt.ICudaEngine, onnx_model: ModelProto, device: torch.device, weight_map: Optional[WeightsNameMap] = None, shape_map: Optional[WeightsShapeMap] = None) -> None:
+        super().__init__(engine=engine, weight_map=weight_map, shape_map=shape_map)
         self.llm_adapter_onnx = AnimaONNXWrapper(onnx_model, device=device, dtype=self.dtype)
 
     def preprocess_text_embeds(self, text_embeds: torch.Tensor, text_ids: Optional[torch.Tensor] = None, t5xxl_weights: Optional[torch.Tensor] = None) -> torch.Tensor:

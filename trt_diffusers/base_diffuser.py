@@ -9,22 +9,14 @@ import tensorrt as trt
 import comfy.lora
 import comfy.model_management
 
-from ..definitions import SupportedModelType, WeightsNameMap, WeightsShapeMap, PatchType, ModelInputNames, ModelInputMapping, trt_logger, trt_runtime
+from ..definitions import SupportedModelType, WeightsNameMap, WeightsShapeMap, PatchType, ModelInputNames, ModelInputMapping, trt_logger
 from ..trt_utils import trt_datatype_to_torch, torch_dtype_to_trt
 
 SupportedModelName = [e.name for e in SupportedModelType]
 
 class TRTDiffuser:
-    def __init__(self, engine_path: Optional[str] = None, engine: Optional[trt.ICudaEngine] = None, weight_map: Optional[WeightsNameMap] = None, shape_map: Optional[WeightsShapeMap] = None) -> None:        
-        if engine is not None:
-            self.engine = engine
-        elif engine_path is not None:
-            engine_path = engine_path
-            with open(engine_path, "rb") as f:
-                deserialized_engine = trt_runtime.deserialize_cuda_engine(f.read())
-                self.engine = deserialized_engine
-        else:
-            raise ValueError("Either engine_path or engine must be provided.")
+    def __init__(self, engine: trt.ICudaEngine, weight_map: Optional[WeightsNameMap] = None, shape_map: Optional[WeightsShapeMap] = None) -> None:        
+        self.engine = engine
         
         trt_dtype = self.engine.get_tensor_dtype(self.engine.get_tensor_name(0))
 
