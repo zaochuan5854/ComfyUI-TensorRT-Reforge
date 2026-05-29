@@ -615,8 +615,16 @@ def _export_anima_llmadapter_to_onnx(llm_adapter: LLMAdapter, output_path: str, 
     output_path = ensure_temp_or_output_path(output_path)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    device = cast(torch.device, model_management.get_torch_device())
-    tracing_model = llm_adapter.to(device).to(dtype).eval()
+    device = torch.device("cpu") # cast(torch.device, model_management.get_torch_device())
+    
+    tracing_model = llm_adapter.to(device)
+    if device.type == "cpu":
+        dtype = torch.float32
+        tracing_model = llm_adapter.to(device)
+        for _, param in tracing_model.named_parameters():
+            if param.dtype == torch.bfloat16:
+                param.data = param.data.float()
+    tracing_model.eval()
 
     input_names = ["source_hidden_states", "target_input_ids", "target_attention_mask", "source_attention_mask"]
     output_names = ["output"]
@@ -627,15 +635,15 @@ def _export_anima_llmadapter_to_onnx(llm_adapter: LLMAdapter, output_path: str, 
     dynamic_shapes: dict[str, dict[int, torch.export.Dim | int]] = {
         "source_hidden_states": {0: batch_size, 1: source_seq_len},
         "target_input_ids": {0: batch_size, 1: target_seq_len},
-        "target_attention_mask": {0: batch_size, 1: target_seq_len},
-        "source_attention_mask": {0: batch_size, 1: source_seq_len},
+        "target_attention_mask": {0: batch_size, 2: target_seq_len, 3: target_seq_len},
+        "source_attention_mask": {0: batch_size, 2: target_seq_len, 3: source_seq_len},
     }
 
     inputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] = (
         torch.randn(batch_size, source_seq_len.max, 1024, device=device, dtype=dtype), # source_hidden_states
         torch.randint(0, 32128, (batch_size, target_seq_len.max), device=device),      # target_input_ids (Long型)
-        torch.ones(batch_size, target_seq_len.max, device=device, dtype=dtype),        # target_attention_mask
-        torch.ones(batch_size, source_seq_len.max, device=device, dtype=dtype),    # source_attention_mask
+        torch.ones(batch_size, 1, target_seq_len.max, target_seq_len.max, device=device, dtype=dtype),        # target_attention_mask
+        torch.ones(batch_size, 1, target_seq_len.max, source_seq_len.max, device=device, dtype=dtype),    # source_attention_mask
     )
     # Anima LLMAdapter is supported in opset 25
     

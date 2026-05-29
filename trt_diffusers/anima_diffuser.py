@@ -32,24 +32,34 @@ class TRTAnimaDiffuser(TRTDiffuser):
 class AnimaONNXWrapper(torch.nn.Module):
     def __init__(self, onnx_model: ModelProto, device: torch.device, dtype: torch.dtype, device_id: int = 0) -> None:
         super().__init__()
-        # if device.type == "cuda" and not check_cuda_compatibility():
-        #     raise RuntimeError("CUDA is not compatible with ONNX Runtime.")
-        self.device = device
-        self.device_type = "cuda" if device.type == "cuda" else "cpu"
+        
+        requested_device_type = "cuda" if device.type == "cuda" else "cpu"
         self.device_id = device_id
         
-        model_data = onnx_model.SerializeToString()
-        
         providers: list[str | tuple[str, dict[str, Any]]] = [
-            ("CUDAExecutionProvider", {"device_id": device_id}),
+            # ("CUDAExecutionProvider", {"device_id": device_id}),
             "CPUExecutionProvider"
-        ] if self.device_type == "cuda" else ["CPUExecutionProvider"]
+        ] if requested_device_type == "cuda" else ["CPUExecutionProvider"]
 
+        model_data = onnx_model.SerializeToString()
         self.session = cast(Session, ort.InferenceSession(model_data, providers=providers))
         self.io_binding = self.session.io_binding()
         
+        active_providers = self.session.get_providers()
+        
+        if "CUDAExecutionProvider" in active_providers:
+            self.device_type = "cuda"
+            self.device = torch.device(f"cuda:{device_id}")
+            self.dtype = dtype
+        else:
+            self.device_type = "cpu"
+            self.device = torch.device("cpu")
+            self.dtype = torch.float32 
+            
+            if requested_device_type == "cuda":
+                print("[Warning] CUDAExecutionProvider was requested but failed to initialize. Fallback to CPU.")
+
         self.target_dim = 1024
-        self.dtype = dtype if self.device_type == "cuda" else torch.float32
         
         match self.dtype:
             case torch.float16:
@@ -59,7 +69,7 @@ class AnimaONNXWrapper(torch.nn.Module):
             case torch.float32:
                 self.tp_dtype = TensorProto.DataType.FLOAT
             case _:
-                raise ValueError(f"Unsupported dtype {dtype}")
+                raise ValueError(f"Unsupported dtype {self.dtype}")
 
     def _normalize_inputs(self, 
                           source_hidden_states: torch.Tensor, 
@@ -77,16 +87,23 @@ class AnimaONNXWrapper(torch.nn.Module):
 
         B, source_seq = source_hidden_states.shape[0], source_hidden_states.shape[1]
         target_seq = target_input_ids.shape[1]
+
         if target_attention_mask is None:
-            target_attention_mask = torch.ones((B, target_seq), dtype=self.dtype, device=self.device)
+            target_attention_mask = torch.ones((B, 1, target_seq, target_seq), dtype=self.dtype, device=self.device)
+        elif target_attention_mask.dim() == 2:
+            target_attention_mask = target_attention_mask.view(B, 1, 1, target_seq).expand(-1, -1, target_seq, -1)
+
         if source_attention_mask is None:
-            source_attention_mask = torch.ones((B, source_seq), dtype=self.dtype, device=self.device)
-        return source_hidden_states, target_input_ids, target_attention_mask, source_attention_mask
+            source_attention_mask = torch.ones((B, 1, target_seq, source_seq), dtype=self.dtype, device=self.device)
+        elif source_attention_mask.dim() == 2:
+            source_attention_mask = source_attention_mask.view(B, 1, 1, source_seq).expand(-1, -1, target_seq, -1)
+            
+        return source_hidden_states.contiguous(), target_input_ids.contiguous(), target_attention_mask.contiguous(), source_attention_mask.contiguous()
 
     def _create_output_buffer(self, source_hidden_states: torch.Tensor, target_input_ids: torch.Tensor) -> torch.Tensor:
         batch_size = source_hidden_states.shape[0]
         seq_length = target_input_ids.shape[1]
-        return torch.empty((batch_size, seq_length, self.target_dim), dtype=self.dtype, device=self.device)
+        return torch.empty((batch_size, seq_length, self.target_dim), dtype=self.dtype, device=self.device).contiguous()
 
     def _configure_binding(self, out_buffer: torch.Tensor, source_hidden_states: torch.Tensor, target_input_ids: torch.Tensor, target_attention_mask: torch.Tensor, source_attention_mask: torch.Tensor) -> None:
         io_binding = self.io_binding
