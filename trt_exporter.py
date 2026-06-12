@@ -4,6 +4,7 @@ from typing_extensions import override, cast, assert_never, Unpack
 import os
 import time
 import json
+from contextlib import contextmanager
 import tqdm
 import numpy as np
 
@@ -138,18 +139,19 @@ class TRTExporter(io.ComfyNode):
 
         enable_lora = spec["enable_lora"]
 
-        torch.onnx.export( # pyright: ignore[reportUnknownMemberType]
-            tracing_model.eval(),
-            inputs,
-            output_onnx,
-            verbose=False,
-            input_names=input_names,
-            output_names=output_names,
-            opset_version=opset_version,
-            dynamic_shapes=dynamic_shapes,
-            dynamo=True,
-            do_constant_folding=False if enable_lora else True, # Constant folding can interfere with LoRA weight mapping, so disable it when LoRA is enabled
-        )
+        with _prepare_model_for_onnx_export():
+            torch.onnx.export( # pyright: ignore[reportUnknownMemberType]
+                tracing_model.eval(),
+                inputs,
+                output_onnx,
+                verbose=False,
+                input_names=input_names,
+                output_names=output_names,
+                opset_version=opset_version,
+                dynamic_shapes=dynamic_shapes,
+                dynamo=True,
+                do_constant_folding=False if enable_lora else True, # Constant folding can interfere with LoRA weight mapping, so disable it when LoRA is enabled
+            )
 
         if enable_lora:
             print("[TensorRT] Analyzing model for LoRA ...")
@@ -240,6 +242,44 @@ def _validate_export_env():
             f"起動引数 '--disable-dynamic-vram' を付けてComfyUIを再起動してください{reset}"
         )
         raise RuntimeError(error_msg)
+
+@contextmanager
+def _prepare_model_for_onnx_export():
+    """
+    Temporarily replace custom comfy_kitchen RoPE split-half ops with equivalent
+    eager PyTorch implementations so torch.onnx.export(dynamo=True) can lower them.
+    Also enables the generic training-mode fallbacks used by some ComfyUI models.
+    """
+    patched_attrs: list[tuple[str, Any]] = []
+    prev_in_training = comfy.model_management.in_training
+    comfy.model_management.in_training = True
+
+    ck = getattr(comfy.quant_ops, "ck", None)
+
+    def _apply_rope_split_half1_eager(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
+        t_ = x.reshape(*x.shape[:-1], 2, -1).movedim(-2, -1).unsqueeze(-2).to(freqs_cis.dtype)
+        t_out = freqs_cis[..., 0] * t_[..., 0] + freqs_cis[..., 1] * t_[..., 1]
+        return t_out.movedim(-1, -2).reshape(*x.shape).type_as(x)
+
+    if ck is not None:
+        if hasattr(ck, "apply_rope_split_half1"):
+            patched_attrs.append(("apply_rope_split_half1", ck.apply_rope_split_half1))
+            ck.apply_rope_split_half1 = _apply_rope_split_half1_eager
+
+        if hasattr(ck, "apply_rope_split_half"):
+            patched_attrs.append(("apply_rope_split_half", ck.apply_rope_split_half))
+            ck.apply_rope_split_half = lambda xq, xk, freqs_cis: (
+                _apply_rope_split_half1_eager(xq, freqs_cis),
+                _apply_rope_split_half1_eager(xk, freqs_cis),
+            )
+
+    try:
+        yield
+    finally:
+        comfy.model_management.in_training = prev_in_training
+        if ck is not None:
+            for attr_name, original_value in reversed(patched_attrs):
+                setattr(ck, attr_name, original_value)
     
 def _load_model_from_basename(model_name: str) -> tuple[str, comfy.model_patcher.ModelPatcher]:
     model_source = None
