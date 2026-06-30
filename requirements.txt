@@ -9,13 +9,13 @@ sympy
 # RMSNormalization is supported in ONNX Opset 23 and later.
 # We require onnx 1.18.0 and onnxruntime 1.24.1 or later for native support.
 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/
-onnx>=1.18.0
-onnxruntime-gpu>=1.24.1  # Use onnxruntime-gpu for TensorRT execution
+onnx>=1.18.0,<1.20.0
+onnxruntime-gpu>=1.24.1,<1.27.0  # Use onnxruntime-gpu for TensorRT execution (1.27+ requires cu13)
 onnxscript
 
 # RMSNormalization is natively supported in TensorRT 10.15.1 and later.
 # Ensure your system TensorRT library matches this version.
 --extra-index-url https://pypi.nvidia.com
-tensorrt-cu12-libs>=10.15.1
-tensorrt-cu12-bindings>=10.15.1
-tensorrt-cu12>=10.15.1
+tensorrt-cu12-libs>=10.15.1,<11.0.0
+tensorrt-cu12-bindings>=10.15.1,<11.0.0
+tensorrt-cu12>=10.15.1,<11.0.0
