@@ -390,15 +390,24 @@ def _get_context_features(model_type: SupportedModelType, unet_config: Optional[
             context_len_min = 1
             dtype = unet_config.get("dtype", torch.float32) if unet_config is not None else torch.float32
 
-        case SupportedModelType.SD15 | SupportedModelType.SDXL:
+        case SupportedModelType.SD15:
             _context_dim = unet_config.get("context_dim", None) if unet_config is not None else None
             if _context_dim is None:
-                raise NotImplementedError("Unsupported model configuration: context_dim is required for SD15/SDXL")
+                raise NotImplementedError("Unsupported model configuration: context_dim is required for SD15")
             context_dim = _context_dim
             context_len = 77
             context_len_min = 77
             dtype = unet_config.get("dtype", torch.float32) if unet_config is not None else torch.float32
 
+        case SupportedModelType.SDXL:
+            _context_dim = unet_config.get("context_dim", None) if unet_config is not None else None
+            if _context_dim is None:
+                raise NotImplementedError("Unsupported model configuration: context_dim is required for SDXL")
+            context_dim = _context_dim
+            context_len = 231
+            context_len_min = 231
+            dtype = unet_config.get("dtype", torch.float32) if unet_config is not None else torch.float32
+    
         case _:
             assert_never(model_type)
 
