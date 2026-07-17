@@ -22,6 +22,7 @@ class TRTDiffuser:
 
         self.dtype = trt_datatype_to_torch(trt_dtype)
         self.context = self.engine.create_execution_context()
+        self.trt_stream: Optional[torch.cuda.Stream] = None
 
         self.model_input_names: ModelInputNames = {
             "latent": "",
@@ -114,12 +115,19 @@ class TRTDiffuser:
                           dtype=trt_datatype_to_torch(self.engine.get_tensor_dtype(output_binding_name)))
         model_inputs_converted[output_binding_name] = out
 
-        stream = torch.cuda.default_stream(latent.device)
+        if self.trt_stream is None or self.trt_stream.device != latent.device:
+            self.trt_stream = torch.cuda.Stream(device=latent.device)
+
+        current_stream = torch.cuda.current_stream(latent.device)
+        self.trt_stream.wait_stream(current_stream)
+
         for i in range(curr_split_batch):
             for arg, tensor in model_inputs_converted.items():
                 chunk_size = tensor.shape[0] // curr_split_batch
                 self.context.set_tensor_address(arg, tensor[chunk_size * i:].data_ptr())
-            self.context.execute_async_v3(stream_handle=stream.cuda_stream)
+            self.context.execute_async_v3(stream_handle=self.trt_stream.cuda_stream)
+        
+        current_stream.wait_stream(self.trt_stream)
         return out
 
     def _set_bindings_shape(self, inputs: dict[str, torch.Tensor], split_batch: int) -> None:
