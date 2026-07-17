@@ -390,15 +390,22 @@ def _get_context_features(model_type: SupportedModelType, unet_config: Optional[
             context_len_min = 1
             dtype = unet_config.get("dtype", torch.float32) if unet_config is not None else torch.float32
 
-        case SupportedModelType.SD15 | SupportedModelType.SDXL:
+        case SupportedModelType.SD15:
             _context_dim = unet_config.get("context_dim", None) if unet_config is not None else None
             if _context_dim is None:
-                raise NotImplementedError("Unsupported model configuration: context_dim is required for SD15/SDXL")
+                raise NotImplementedError("Unsupported model configuration: context_dim is required for SD15")
             context_dim = _context_dim
             context_len = 77
             context_len_min = 77
             dtype = unet_config.get("dtype", torch.float32) if unet_config is not None else torch.float32
-
+        case SupportedModelType.SDXL:
+            _context_dim = unet_config.get("context_dim", None) if unet_config is not None else None
+            if _context_dim is None:
+                raise NotImplementedError("Unsupported model configuration: context_dim is required for SDXL")
+            context_dim = _context_dim
+            context_len = 231
+            context_len_min = 77
+            dtype = unet_config.get("dtype", torch.float32) if unet_config is not None else torch.float32
         case _:
             assert_never(model_type)
 
@@ -425,7 +432,10 @@ def _build_onnx_tracing_input(
     batch_size_dim = torch.export.Dim("batch_size", min=bs_min, max=bs_max) if bs_min != bs_max else bs_opt
     height_dim = torch.export.Dim("height", min=min_height // 8, max=max_height // 8) if min_height != max_height else opt_height // 8
     width_dim = torch.export.Dim("width", min=min_width // 8, max=max_width // 8) if min_width != max_width else opt_width // 8
-    num_embeds_dim = torch.export.Dim("num_embeds", min=context_len_min, max=context_len) if context_len_min != context_len else context_len
+    actual_ctx_min = context_len_min * ctx_min
+    actual_ctx_max = context_len * ctx_max
+    actual_ctx_opt = context_len * ctx_opt
+    num_embeds_dim = torch.export.Dim("num_embeds", min=actual_ctx_min, max=actual_ctx_max) if actual_ctx_min != actual_ctx_max else actual_ctx_opt
     num_video_frames_dim = num_video_frames if use_rope3d else None
 
     input_names = ["latent", "timestep", "context"]
